@@ -1,0 +1,38 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run All Tests (via Task)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "run-tests",
+            "program": "${workspaceFolder}/tests/PersistNet.Tests/bin/Debug/net8.0/PersistNet.Tests.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Run Tests Verbose (via Task)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "run-tests-verbose",
+            "program": "${workspaceFolder}/tests/PersistNet.Tests/bin/Debug/net8.0/PersistNet.Tests.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Run Tests in Current File",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "run-tests-current-file",
+            "program": "${workspaceFolder}/tests/PersistNet.Tests/bin/Debug/net8.0/PersistNet.Tests.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "integratedTerminal"
+        }
+    ]
+}

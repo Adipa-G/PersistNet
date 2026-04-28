@@ -10,6 +10,7 @@ public enum ColumnType
     Float,
     Timestamp,
     Varchar,
+    Decimal,
     Unknown,
     Version
 }

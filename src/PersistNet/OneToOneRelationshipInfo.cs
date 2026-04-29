@@ -20,13 +20,13 @@ public class OneToOneRelationshipInfo : Attribute
     public string[] ToKeys { get; set; } = Array.Empty<string>();
 
     /// <summary>
-    /// Set on the inverse side only — the property name on the owning side.
+    /// Set on the inverse side only ï¿½ the property name on the owning side.
     /// </summary>
     public string? MappedBy { get; set; }
 
     public bool Nullable { get; set; } = false;
 
-    public ReferentialRuleType? OnDelete { get; set; }
+    public ReferentialRuleType OnDelete { get; set; } = ReferentialRuleType.Unspecified;
 
-    public ReferentialRuleType? OnUpdate { get; set; }
+    public ReferentialRuleType OnUpdate { get; set; } = ReferentialRuleType.Unspecified;
 }

@@ -66,27 +66,6 @@
             "dependsOn": "build"
         },
         {
-            "label": "run-tests-current-file",
-            "command": "dotnet",
-            "type": "process",
-            "args": [
-                "test",
-                "${workspaceFolder}/PersistNet.sln",
-                "--filter",
-                "ClassName~${fileBasenameNoExtension}",
-                "--verbosity",
-                "detailed"
-            ],
-            "problemMatcher": "$msCompile",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared"
-            },
-            "dependsOn": "build"
-        },
-        {
             "label": "clean",
             "command": "dotnet",
             "type": "process",

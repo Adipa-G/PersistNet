@@ -21,7 +21,7 @@ public class ManyToOneRelationshipInfo : Attribute
 
     public bool Nullable { get; set; } = false;
 
-    public ReferentialRuleType? OnDelete { get; set; }
+    public ReferentialRuleType OnDelete { get; set; } = ReferentialRuleType.Unspecified;
 
-    public ReferentialRuleType? OnUpdate { get; set; }
+    public ReferentialRuleType OnUpdate { get; set; } = ReferentialRuleType.Unspecified;
 }

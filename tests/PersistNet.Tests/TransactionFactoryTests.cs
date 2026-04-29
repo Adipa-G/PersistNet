@@ -12,7 +12,6 @@ public class TransactionFactoryTests
     private const string InMemoryConnectionString = "Data Source=:memory:";
 
     // ── Connection string mode ─────────────────────────────────────────────
-
     [Fact]
     public async Task GivenConnectionStringMode_WhenOpenTransactionAsyncCalled_ThenReturnsTransaction()
     {

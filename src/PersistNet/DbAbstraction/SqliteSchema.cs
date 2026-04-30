@@ -113,6 +113,136 @@ internal sealed class SqliteSchema : AnsiSqlSchemaBase
     public override Task DropIndexAsync(string tableName, string? tableSchema, string indexName, CancellationToken ct = default)
         => ExecuteAsync(BuildDropIndexSql(indexName), ct);
 
+    // ── GenerateDiffSql ────────────────────────────────────────────────────
+
+    internal override IReadOnlyList<string> GenerateDiffSql(SchemaDiff diff, SchemaSnapshot desired, SchemaSnapshot actual)
+    {
+        // Start with the base operations (create table, add/drop column, create index, add FK via ANSI).
+        // Note: ForeignKeysToAdd will produce ANSI ADD FK SQL from the base which SQLite can't run.
+        // We skip those here and generate recreation statements instead.
+        var sql = new List<string>();
+
+        foreach (var table in diff.TablesToCreate)
+            sql.Add(BuildCreateTableSql(table));
+
+        foreach (var (tableName, _, col) in diff.ColumnsToAdd)
+            sql.Add(BuildAddColumnSql(tableName, null, col));
+
+        foreach (var (tableName, _, index) in diff.IndexesToCreate)
+            sql.Add(BuildCreateIndexSql(tableName, null, index));
+
+        // DROP INDEX uses single-arg form for SQLite
+        foreach (var (_, _, indexName) in diff.IndexesToDrop)
+            sql.Add(BuildDropIndexSql(indexName));
+
+        foreach (var (tableName, _, colName) in diff.ColumnsToDrop)
+            sql.Add(BuildDropColumnSql(tableName, null, colName));
+
+        foreach (var (tableName, schema) in diff.TablesToDrop)
+            sql.Add(BuildDropTableSql(tableName, schema));
+
+        // For table-recreation operations we need the full old/new table structures
+        foreach (var (tableName, _, col) in diff.ColumnsToAlter)
+        {
+            var oldTable = actual.Tables.FirstOrDefault(t =>
+                string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase));
+            var newTable = desired.Tables.FirstOrDefault(t =>
+                string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase));
+            if (oldTable is null || newTable is null) continue;
+
+            // Build the updated table: same desired structure but replace just this column
+            var updatedCols = oldTable.Columns
+                .Select(c => string.Equals(c.Name, col.Name, StringComparison.OrdinalIgnoreCase) ? col : c)
+                .ToList();
+            var updated = new SchemaTable(oldTable.Name, null, newTable.PrimaryKey, updatedCols,
+                oldTable.Indexes, oldTable.ForeignKeys);
+
+            sql.AddRange(BuildRecreateTableStatements(oldTable, updated));
+        }
+
+        foreach (var (tableName, _, fk) in diff.ForeignKeysToAdd)
+        {
+            var oldTable = actual.Tables.FirstOrDefault(t =>
+                string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase));
+            var newTable = desired.Tables.FirstOrDefault(t =>
+                string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase));
+            if (oldTable is null || newTable is null) continue;
+
+            var updatedFks = oldTable.ForeignKeys.Append(fk).ToList();
+            var updated = new SchemaTable(oldTable.Name, null, oldTable.PrimaryKey, oldTable.Columns,
+                oldTable.Indexes, updatedFks);
+
+            sql.AddRange(BuildRecreateTableStatements(oldTable, updated));
+        }
+
+        foreach (var (tableName, _, fkName) in diff.ForeignKeysToDrop)
+        {
+            var oldTable = actual.Tables.FirstOrDefault(t =>
+                string.Equals(t.Name, tableName, StringComparison.OrdinalIgnoreCase));
+            if (oldTable is null) continue;
+
+            bool removed = false;
+            var newFks = new List<SchemaForeignKey>();
+            foreach (var f in oldTable.ForeignKeys)
+            {
+                if (!removed && (
+                    (f.Name is not null && string.Equals(f.Name, fkName, StringComparison.OrdinalIgnoreCase)) ||
+                    (f.Name is null && string.Equals(f.ToTable, fkName, StringComparison.OrdinalIgnoreCase))))
+                {
+                    removed = true;
+                    continue;
+                }
+                newFks.Add(f);
+            }
+            var updated = new SchemaTable(oldTable.Name, null, oldTable.PrimaryKey, oldTable.Columns,
+                oldTable.Indexes, newFks);
+
+            sql.AddRange(BuildRecreateTableStatements(oldTable, updated));
+        }
+
+        return sql;
+    }
+
+    /// <summary>
+    /// Generates the ordered SQL statements to recreate a table with a new definition,
+    /// preserving data in columns that exist in both old and new schema.
+    /// This is pure SQL generation — no IO.
+    /// </summary>
+    private IReadOnlyList<string> BuildRecreateTableStatements(SchemaTable old, SchemaTable updated)
+    {
+        var sql      = new List<string>();
+        var tempName = $"{old.Name}__rebuild";
+
+        sql.Add("PRAGMA foreign_keys = OFF");
+
+        var tempTable = new SchemaTable(tempName, null, updated.PrimaryKey, updated.Columns, [], updated.ForeignKeys);
+        sql.Add(BuildCreateTableSql(tempTable));
+
+        var commonCols = old.Columns
+            .Select(c => c.Name)
+            .Where(n => updated.Columns.Any(nc =>
+                string.Equals(nc.Name, n, StringComparison.OrdinalIgnoreCase)))
+            .Select(QuoteIdentifier)
+            .ToList();
+
+        if (commonCols.Count > 0)
+        {
+            var colList = string.Join(", ", commonCols);
+            sql.Add($"INSERT INTO {QuoteIdentifier(tempName)} ({colList}) " +
+                    $"SELECT {colList} FROM {QuoteIdentifier(old.Name)}");
+        }
+
+        sql.Add(BuildDropTableSql(old.Name, null));
+        sql.Add($"ALTER TABLE {QuoteIdentifier(tempName)} RENAME TO {QuoteIdentifier(old.Name)}");
+
+        foreach (var idx in updated.Indexes)
+            sql.Add(BuildCreateIndexSql(old.Name, null, idx));
+
+        sql.Add("PRAGMA foreign_keys = ON");
+
+        return sql;
+    }
+
     // ── ADD / DROP FK and ALTER COLUMN — all via table recreation ─────────
 
     public override Task AddForeignKeyAsync(string tableName, string? tableSchema, SchemaForeignKey foreignKey, CancellationToken ct = default)
@@ -246,10 +376,12 @@ internal sealed class SqliteSchema : AnsiSqlSchemaBase
             var columns = columnRows.Select(r =>
             {
                 var (dbType, size, precision, scale) = ParseColumnType(r.RawType);
+                // PK columns are implicitly NOT NULL in SQLite even if notnull = 0 in PRAGMA
+                var isNullable = !r.NotNull && r.PkOrder == 0;
                 return new SchemaColumn(
                     r.Name,
                     dbType,
-                    !r.NotNull,
+                    isNullable,
                     r.Name == autoIncrCol,
                     r.Default,
                     size,

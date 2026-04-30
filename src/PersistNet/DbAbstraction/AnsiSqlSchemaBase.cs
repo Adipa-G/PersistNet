@@ -178,6 +178,42 @@ internal abstract class AnsiSqlSchemaBase : IDbSchema
         return sb.ToString();
     }
 
+    // ── GenerateDiffSql ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Converts a <see cref="SchemaDiff"/> into the ordered SQL statements required to
+    /// migrate from <paramref name="actual"/> to <paramref name="desired"/>.
+    /// <para>
+    /// The base implementation handles all operations that have provider-agnostic
+    /// <c>Build*Sql</c> methods here. Subclasses should call <c>base.GenerateDiffSql</c>
+    /// and then append their provider-specific statements (ALTER COLUMN, DROP INDEX, etc.).
+    /// </para>
+    /// </summary>
+    internal virtual IReadOnlyList<string> GenerateDiffSql(SchemaDiff diff, SchemaSnapshot desired, SchemaSnapshot actual)
+    {
+        var sql = new List<string>();
+
+        foreach (var table in diff.TablesToCreate)
+            sql.Add(BuildCreateTableSql(table));
+
+        foreach (var (tableName, tableSchema, col) in diff.ColumnsToAdd)
+            sql.Add(BuildAddColumnSql(tableName, tableSchema, col));
+
+        foreach (var (tableName, tableSchema, index) in diff.IndexesToCreate)
+            sql.Add(BuildCreateIndexSql(tableName, tableSchema, index));
+
+        foreach (var (tableName, tableSchema, fk) in diff.ForeignKeysToAdd)
+            sql.Add(BuildAddForeignKeySql(tableName, tableSchema, fk));
+
+        foreach (var (tableName, tableSchema, colName) in diff.ColumnsToDrop)
+            sql.Add(BuildDropColumnSql(tableName, tableSchema, colName));
+
+        foreach (var (tableName, tableSchema) in diff.TablesToDrop)
+            sql.Add(BuildDropTableSql(tableName, tableSchema));
+
+        return sql;
+    }
+
     // ── Abstract (provider-specific) ──────────────────────────────────────
 
     public abstract Task<SchemaSnapshot> GetCurrentSchemaAsync(CancellationToken ct = default);

@@ -70,6 +70,24 @@ internal sealed class SqlServerSchema : AnsiSqlSchemaBase
     public override Task DropForeignKeyAsync(string tableName, string? tableSchema, string foreignKeyName, CancellationToken ct = default)
         => ExecuteAsync(BuildDropForeignKeySql(tableName, tableSchema, foreignKeyName), ct);
 
+    // ── GenerateDiffSql ────────────────────────────────────────────────────
+
+    internal override IReadOnlyList<string> GenerateDiffSql(SchemaDiff diff, SchemaSnapshot desired, SchemaSnapshot actual)
+    {
+        var sql = new List<string>(base.GenerateDiffSql(diff, desired, actual));
+
+        foreach (var (tableName, tableSchema, col) in diff.ColumnsToAlter)
+            sql.Add(BuildAlterColumnSql(tableName, tableSchema, col));
+
+        foreach (var (tableName, tableSchema, indexName) in diff.IndexesToDrop)
+            sql.Add(BuildDropIndexSql(tableName, tableSchema, indexName));
+
+        foreach (var (tableName, tableSchema, fkName) in diff.ForeignKeysToDrop)
+            sql.Add(BuildDropForeignKeySql(tableName, tableSchema, fkName));
+
+        return sql;
+    }
+
     // ── GetCurrentSchemaAsync — reads sys.* catalog views ─────────────────
 
     public override async Task<SchemaSnapshot> GetCurrentSchemaAsync(CancellationToken ct = default)

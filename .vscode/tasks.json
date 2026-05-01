@@ -80,6 +80,48 @@
                 "focus": false,
                 "panel": "shared"
             }
+        },
+        {
+            "label": "coverage",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "test",
+                "${workspaceFolder}/PersistNet.sln",
+                "--collect",
+                "XPlat Code Coverage",
+                "--results-directory",
+                "${workspaceFolder}/TestResults",
+                "--settings",
+                "${workspaceFolder}/coverage.runsettings"
+            ],
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "dependsOn": "build"
+        },
+        {
+            "label": "coverag e-report",
+            "command": "dotnet",
+            "type": "process",
+            "args": [
+                "reportgenerator",
+                "-reports:${workspaceFolder}/TestResults/**/coverage.cobertura.xml",
+                "-targetdir:${workspaceFolder}/coverage/report",
+                "-reporttypes:Html"
+            ],
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "dependsOn": "coverage"
         }
     ]
 }

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using PersistNet.DbInfo;
 
-namespace PersistNet.DbAbstraction;
+namespace PersistNet.Schema;
 
 /// <summary>
 /// Converts a <see cref="Database"/> (desired state derived from entity metadata)

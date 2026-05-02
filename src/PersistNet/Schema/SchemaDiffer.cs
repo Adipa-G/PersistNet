@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace PersistNet.DbAbstraction;
+namespace PersistNet.Schema;
 
 internal static class SchemaDiffer
 {

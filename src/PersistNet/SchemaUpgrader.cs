@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PersistNet.DbAbstraction;
 using PersistNet.DbInfo;
+using PersistNet.Schema;
 
 namespace PersistNet;
 

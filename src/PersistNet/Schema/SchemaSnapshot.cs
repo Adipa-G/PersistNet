@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace PersistNet.DbAbstraction;
+namespace PersistNet.Schema;
 
 internal sealed class SchemaSnapshot
 {

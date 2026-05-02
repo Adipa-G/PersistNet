@@ -1,5 +1,5 @@
 using System.Linq;
-using PersistNet.DbAbstraction;
+using PersistNet.Schema;
 using Xunit;
 
 namespace PersistNet.Tests;

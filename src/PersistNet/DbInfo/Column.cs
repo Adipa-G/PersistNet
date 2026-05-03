@@ -1,3 +1,5 @@
+using System;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace PersistNet.DbInfo;
@@ -5,6 +7,10 @@ namespace PersistNet.DbInfo;
 internal sealed class Column
 {
     public PropertyInfo Property { get; }
+
+    /// <summary>Compiled getter — avoids reflection overhead on every row.</summary>
+    public Func<object, object?> Getter { get; }
+
     public string ColumnName { get; }
     public ColumnType? Type { get; }
     public bool IsKey { get; }
@@ -34,6 +40,7 @@ internal sealed class Column
         string? defaultValue)
     {
         Property = property;
+        Getter = BuildGetter(property);
         ColumnName = columnName;
         Type = type;
         IsKey = isKey;
@@ -46,5 +53,14 @@ internal sealed class Column
         Precision = precision;
         Scale = scale;
         DefaultValue = defaultValue;
+    }
+
+    private static Func<object, object?> BuildGetter(PropertyInfo property)
+    {
+        var param = Expression.Parameter(typeof(object), "obj");
+        var cast = Expression.Convert(param, property.DeclaringType!);
+        var access = Expression.Property(cast, property);
+        var box = Expression.Convert(access, typeof(object));
+        return Expression.Lambda<Func<object, object?>>(box, param).Compile();
     }
 }

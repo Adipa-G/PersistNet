@@ -105,7 +105,7 @@
             "dependsOn": "build"
         },
         {
-            "label": "coverag e-report",
+            "label": "coverage report",
             "command": "dotnet",
             "type": "process",
             "args": [

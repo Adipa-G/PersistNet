@@ -47,13 +47,13 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
     public void Save<T>(T entity) =>
         throw new NotImplementedException("SQL generation not yet implemented.");
 
-    public Task<T> SaveAndFlushAsync<T>(T entity) =>
+    public Task<T> SaveAndCommitAsync<T>(T entity) =>
         throw new NotImplementedException("SQL generation not yet implemented.");
 
     public void Delete<T>(T entity) =>
         throw new NotImplementedException("SQL generation not yet implemented.");
 
-    public Task DeleteAndFlushAsync<T>(T entity) =>
+    public Task DeleteAndCommitAsync<T>(T entity) =>
         throw new NotImplementedException("SQL generation not yet implemented.");
 
     public Task<T> GetAsync<T>(object id) =>

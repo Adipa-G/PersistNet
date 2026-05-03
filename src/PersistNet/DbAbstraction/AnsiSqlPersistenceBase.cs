@@ -1,0 +1,273 @@
+using PersistNet.DbInfo;
+using PersistNet.Entities;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Common;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace PersistNet.DbAbstraction;
+
+/// <summary>
+/// Abstract base that provides ANSI-SQL DML generation for INSERT, UPDATE, DELETE,
+/// and single-key SELECT operations.
+/// Subclasses override identifier quoting and composite-key WHERE-clause generation
+/// where provider syntax diverges.
+/// </summary>
+internal abstract class AnsiSqlPersistenceBase : IDbPersistence
+{
+    protected DbConnection Connection { get; }
+
+    protected AnsiSqlPersistenceBase(DbConnection connection)
+    {
+        Connection = connection;
+    }
+
+    // ── Identifier quoting (virtual — SQL Server overrides with []) ─────────
+
+    protected virtual string QuoteIdentifier(string name) => $"\"{name}\"";
+
+    protected string QualifiedTable(string name, string? schema) =>
+        schema is not null
+            ? $"{QuoteIdentifier(schema)}.{QuoteIdentifier(name)}"
+            : QuoteIdentifier(name);
+
+    // ── Execution helper ────────────────────────────────────────────────────
+
+    private async Task RunAsync(string sql, List<(string Name, object? Value)> parameters, CancellationToken ct)
+    {
+        using var cmd = Connection.CreateCommand();
+        cmd.CommandText = sql;
+        foreach (var (name, value) in parameters)
+        {
+            var p = cmd.CreateParameter();
+            p.ParameterName = name;
+            p.Value = value ?? DBNull.Value;
+            cmd.Parameters.Add(p);
+        }
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // ── Dispatcher ──────────────────────────────────────────────────────────
+
+    public Task ExecuteAsync(OptimizedOperation operation, CancellationToken ct = default) =>
+        operation switch
+        {
+            MultiRowInsert insert => ExecuteInsertAsync(insert, ct),
+            GroupedUpdate  update => ExecuteUpdateAsync(update, ct),
+            BatchDelete    delete => ExecuteDeleteAsync(delete, ct),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation),
+                     $"Unknown OptimizedOperation type '{operation.GetType().Name}'.")
+        };
+
+    // ── INSERT ──────────────────────────────────────────────────────────────
+
+    public Task ExecuteInsertAsync(MultiRowInsert insert, CancellationToken ct = default)
+    {
+        var (sql, parameters) = BuildInsertSql(insert);
+        return RunAsync(sql, parameters, ct);
+    }
+
+    protected internal virtual (string Sql, List<(string Name, object? Value)> Parameters)
+        BuildInsertSql(MultiRowInsert insert)
+    {
+        var parameters = new List<(string Name, object? Value)>();
+        var idx = 0;
+
+        var cols = string.Join(", ", insert.Columns.Select(QuoteIdentifier));
+        var rowParts = new List<string>();
+
+        foreach (var row in insert.ValueRows)
+        {
+            var pNames = new List<string>();
+            foreach (var value in row)
+            {
+                var pName = $"@p{idx++}";
+                parameters.Add((pName, value));
+                pNames.Add(pName);
+            }
+            rowParts.Add($"({string.Join(", ", pNames)})");
+        }
+
+        var sql = $"INSERT INTO {QualifiedTable(insert.TableName, insert.Schema)} " +
+                  $"({cols}) VALUES {string.Join(", ", rowParts)}";
+        return (sql, parameters);
+    }
+
+    // ── UPDATE ──────────────────────────────────────────────────────────────
+
+    public Task ExecuteUpdateAsync(GroupedUpdate update, CancellationToken ct = default)
+    {
+        var (sql, parameters) = BuildUpdateSql(update);
+        return RunAsync(sql, parameters, ct);
+    }
+
+    protected internal virtual (string Sql, List<(string Name, object? Value)> Parameters)
+        BuildUpdateSql(GroupedUpdate update)
+    {
+        var parameters = new List<(string Name, object? Value)>();
+        var idx = 0;
+
+        var setParts = new List<string>();
+        foreach (var sc in update.SetClauses)
+        {
+            var pName = $"@p{idx++}";
+            parameters.Add((pName, sc.Value));
+            setParts.Add($"{QuoteIdentifier(sc.ColumnName)}={pName}");
+        }
+
+        var wherePart = BuildKeyWhereClause(update.KeyColumns, update.KeyValues, parameters, ref idx);
+        var sql = $"UPDATE {QualifiedTable(update.TableName, update.Schema)} " +
+                  $"SET {string.Join(", ", setParts)} WHERE {wherePart}";
+        return (sql, parameters);
+    }
+
+    // ── DELETE ──────────────────────────────────────────────────────────────
+
+    public Task ExecuteDeleteAsync(BatchDelete delete, CancellationToken ct = default)
+    {
+        var (sql, parameters) = BuildDeleteSql(delete);
+        return RunAsync(sql, parameters, ct);
+    }
+
+    protected internal virtual (string Sql, List<(string Name, object? Value)> Parameters)
+        BuildDeleteSql(BatchDelete delete)
+    {
+        var parameters = new List<(string Name, object? Value)>();
+        var idx = 0;
+
+        var wherePart = BuildKeyWhereClause(delete.KeyColumns, delete.KeyValues, parameters, ref idx);
+        var sql = $"DELETE FROM {QualifiedTable(delete.TableName, delete.Schema)} WHERE {wherePart}";
+        return (sql, parameters);
+    }
+
+    // ── WHERE clause (virtual — SQL Server overrides composite-key handling) ─
+
+    /// <summary>
+    /// Generates the WHERE clause for key-based UPDATE and DELETE operations.
+    /// Single-key:  <c>"col" IN (@p0, @p1, …)</c>
+    /// Composite (ANSI/SQLite): <c>("k1","k2") IN ((@p0,@p1), (@p2,@p3))</c>
+    /// SQL Server overrides composite to use OR-predicate chains.
+    /// </summary>
+    protected virtual string BuildKeyWhereClause(
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<IReadOnlyList<object?>> keyValues,
+        List<(string Name, object? Value)> parameters,
+        ref int idx)
+    {
+        if (keyColumns.Count == 1)
+        {
+            // Single key: straightforward IN clause.
+            var col = QuoteIdentifier(keyColumns[0]);
+            var pNames = new List<string>();
+            foreach (var kv in keyValues)
+            {
+                var pName = $"@p{idx++}";
+                parameters.Add((pName, kv[0]));
+                pNames.Add(pName);
+            }
+            return $"{col} IN ({string.Join(", ", pNames)})";
+        }
+
+        // Composite key — ANSI row-value constructor.
+        var colList = $"({string.Join(", ", keyColumns.Select(QuoteIdentifier))})";
+        var rowTuples = new List<string>();
+        foreach (var kv in keyValues)
+        {
+            var pNames = new List<string>();
+            foreach (var value in kv)
+            {
+                var pName = $"@p{idx++}";
+                parameters.Add((pName, value));
+                pNames.Add(pName);
+            }
+            rowTuples.Add($"({string.Join(", ", pNames)})");
+        }
+        return $"{colList} IN ({string.Join(", ", rowTuples)})";
+    }
+
+    // ── SELECT / read ────────────────────────────────────────────────────────
+
+    public async Task<T?> FindByKeyAsync<T>(object keyValue, CancellationToken ct = default) where T : class
+    {
+        var table = DbInfoCache.FindTable(typeof(T))
+            ?? throw new InvalidOperationException(
+                $"Type '{typeof(T).Name}' is not registered in DbInfoCache.");
+
+        var keyCols = table.Columns.Where(c => c.IsKey).ToList();
+        if (keyCols.Count > 1)
+            throw new NotSupportedException(
+                $"FindByKeyAsync does not yet support composite keys. " +
+                $"Table '{table.Name}' has {keyCols.Count} key columns.");
+
+        var keyCol   = keyCols[0];
+        var subType  = DbInfoCache.FindSubType(table, typeof(T));
+
+        // Build SELECT column list: root columns + extra subtype columns when relevant.
+        IEnumerable<Column> selectColumns = subType is null
+            ? table.Columns
+            : table.Columns.Concat(subType.ExtraColumns);
+
+        var colList = string.Join(", ", selectColumns.Select(c => QuoteIdentifier(c.ColumnName)));
+        var sql = $"SELECT {colList} FROM {QualifiedTable(table.Name, table.Schema)} " +
+                  $"WHERE {QuoteIdentifier(keyCol.ColumnName)} = @p0";
+
+        // Narrow to the correct subtype row when T is a registered subtype.
+        var discriminatorCol = subType is not null
+            ? table.Columns.FirstOrDefault(c => c.IsDiscriminator)
+            : null;
+
+        if (discriminatorCol is not null)
+            sql += $" AND {QuoteIdentifier(discriminatorCol.ColumnName)} = @p1";
+
+        using var cmd = Connection.CreateCommand();
+        cmd.CommandText = sql;
+
+        var keyParam = cmd.CreateParameter();
+        keyParam.ParameterName = "@p0";
+        keyParam.Value = keyValue ?? DBNull.Value;
+        cmd.Parameters.Add(keyParam);
+
+        if (discriminatorCol is not null)
+        {
+            var discParam = cmd.CreateParameter();
+            discParam.ParameterName = "@p1";
+            discParam.Value = subType!.DiscriminatorValue;
+            cmd.Parameters.Add(discParam);
+        }
+
+        using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return null;
+
+        var instance = Activator.CreateInstance<T>();
+        for (var i = 0; i < reader.FieldCount; i++)
+        {
+            var colName = reader.GetName(i);
+            var col = selectColumns.FirstOrDefault(c =>
+                string.Equals(c.ColumnName, colName, StringComparison.OrdinalIgnoreCase));
+            if (col is null) continue;
+
+            var rawValue = reader.IsDBNull(i) ? null : reader.GetValue(i);
+            col.Property.SetValue(instance, ConvertValue(rawValue, col.Property.PropertyType));
+        }
+
+        return instance;
+    }
+
+    // ── Type coercion helper ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Coerces a value read from <see cref="DbDataReader"/> to the CLR property type.
+    /// Handles the common case where SQLite returns <c>long</c> for integer columns,
+    /// <c>double</c> for decimal columns, etc.
+    /// </summary>
+    private static object? ConvertValue(object? dbValue, Type targetType)
+    {
+        if (dbValue is null) return null;
+        var underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
+        if (underlying.IsAssignableFrom(dbValue.GetType())) return dbValue;
+        return Convert.ChangeType(dbValue, underlying);
+    }
+}

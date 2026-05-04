@@ -18,6 +18,7 @@ public class TransactionFactoryTests
         var factory = new TransactionFactory(
             InMemoryConnectionString,
             SqliteFactory.Instance,
+            DbProvider.SQLite,
             NullLogger<TransactionFactory>.Instance);
 
         await using var transaction = await factory.OpenTransactionAsync();
@@ -31,6 +32,7 @@ public class TransactionFactoryTests
         var factory = new TransactionFactory(
             InMemoryConnectionString,
             SqliteFactory.Instance,
+            DbProvider.SQLite,
             NullLogger<TransactionFactory>.Instance);
 
         await using (var transaction = await factory.OpenTransactionAsync())
@@ -49,6 +51,7 @@ public class TransactionFactoryTests
         var factory = new TransactionFactory(
             InMemoryConnectionString,
             SqliteFactory.Instance,
+            DbProvider.SQLite,
             NullLogger<TransactionFactory>.Instance);
 
         // No commit — DisposeAsync should roll back cleanly
@@ -63,7 +66,7 @@ public class TransactionFactoryTests
         await using var conn = new SqliteConnection(InMemoryConnectionString);
         await conn.OpenAsync();
 
-        var factory = new TransactionFactory(conn, NullLogger<TransactionFactory>.Instance);
+        var factory = new TransactionFactory(conn, DbProvider.SQLite, NullLogger<TransactionFactory>.Instance);
 
         await using var transaction = await factory.OpenTransactionAsync();
 
@@ -76,7 +79,7 @@ public class TransactionFactoryTests
         await using var conn = new SqliteConnection(InMemoryConnectionString);
         await conn.OpenAsync();
 
-        var factory = new TransactionFactory(conn, NullLogger<TransactionFactory>.Instance);
+        var factory = new TransactionFactory(conn, DbProvider.SQLite, NullLogger<TransactionFactory>.Instance);
 
         await using (var transaction = await factory.OpenTransactionAsync())
         {
@@ -93,7 +96,7 @@ public class TransactionFactoryTests
         await using var conn = new SqliteConnection(InMemoryConnectionString);
         await conn.OpenAsync();
 
-        var factory = new TransactionFactory(conn, NullLogger<TransactionFactory>.Instance);
+        var factory = new TransactionFactory(conn, DbProvider.SQLite, NullLogger<TransactionFactory>.Instance);
 
         await using (var transaction = await factory.OpenTransactionAsync())
         {
@@ -112,6 +115,7 @@ public class TransactionFactoryTests
         var factory = new TransactionFactory(
             InMemoryConnectionString,
             SqliteFactory.Instance,
+            DbProvider.SQLite,
             NullLogger<TransactionFactory>.Instance);
 
         await using var transaction = await factory.OpenTransactionAsync();
@@ -126,6 +130,7 @@ public class TransactionFactoryTests
         var factory = new TransactionFactory(
             InMemoryConnectionString,
             SqliteFactory.Instance,
+            DbProvider.SQLite,
             NullLogger<TransactionFactory>.Instance);
 
         var transaction = await factory.OpenTransactionAsync();
@@ -138,20 +143,20 @@ public class TransactionFactoryTests
     public void GivenConnectionStringMode_WhenNullConnectionString_ThenThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new TransactionFactory(null!, SqliteFactory.Instance, NullLogger<TransactionFactory>.Instance));
+            new TransactionFactory(null!, SqliteFactory.Instance, DbProvider.SQLite, NullLogger<TransactionFactory>.Instance));
     }
 
     [Fact]
     public void GivenConnectionStringMode_WhenNullProviderFactory_ThenThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new TransactionFactory(InMemoryConnectionString, null!, NullLogger<TransactionFactory>.Instance));
+            new TransactionFactory(InMemoryConnectionString, null!, DbProvider.SQLite, NullLogger<TransactionFactory>.Instance));
     }
 
     [Fact]
     public void GivenDirectConnectionMode_WhenNullConnection_ThenThrowsArgumentNullException()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            new TransactionFactory((System.Data.Common.DbConnection)null!, NullLogger<TransactionFactory>.Instance));
+            new TransactionFactory((System.Data.Common.DbConnection)null!, DbProvider.SQLite, NullLogger<TransactionFactory>.Instance));
     }
 }

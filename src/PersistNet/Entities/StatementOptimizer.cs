@@ -121,14 +121,19 @@ internal static class StatementOptimizer
 
         // Group by fingerprint — preserving insertion order of groups so that the
         // output order is deterministic (important for tests and for SQL ordering).
-        var groups = new Dictionary<string, (List<SetClause> SetClauses, List<IReadOnlyList<object?>> KeyValues)>(
-            StringComparer.Ordinal);
+        var groups = new Dictionary<string, (
+            List<SetClause> SetClauses,
+            List<IReadOnlyList<object?>> KeyValues,
+            string? VersionColumn,
+            object? ExpectedVersionValue)>(StringComparer.Ordinal);
         var groupOrder = new List<string>();
 
         foreach (var row in vtable.Rows)
         {
+            var versionCell = row.Cells.FirstOrDefault(c => c.IsVersion);
+
             var setCells = row.Cells
-                .Where(c => !keyColNames.Contains(c.ColumnName))
+                .Where(c => !keyColNames.Contains(c.ColumnName) && !c.IsVersion)
                 .OrderBy(c => c.ColumnName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
@@ -136,15 +141,29 @@ internal static class StatementOptimizer
                 .Where(c => keyColNames.Contains(c.ColumnName))
                 .ToList();
 
+            // Fingerprint includes regular SET values + version new-value so that
+            // rows sharing the same old version group together.
+            long newVersionValue = versionCell is not null
+                ? (long)Convert.ChangeType(versionCell.Value!, typeof(long)) + 1
+                : 0;
+
             var fingerprint = string.Join("|", setCells.Select(
-                c => $"{c.ColumnName}={(c.Value is null ? NullSentinel : c.Value)}"));
+                c => $"{c.ColumnName}={(c.Value is null ? NullSentinel : c.Value)}"))
+                + (versionCell is not null ? $"|__ver={newVersionValue}" : "");
 
             if (!groups.TryGetValue(fingerprint, out var group))
             {
                 var setClauses = setCells
                     .Select(c => new SetClause(c.ColumnName, c.Value))
                     .ToList();
-                group = (setClauses, new List<IReadOnlyList<object?>>());
+
+                // Version column goes into SetClauses with the incremented value.
+                if (versionCell is not null)
+                    setClauses.Add(new SetClause(versionCell.ColumnName, (object)newVersionValue));
+
+                group = (setClauses, new List<IReadOnlyList<object?>>(),
+                    versionCell?.ColumnName,
+                    versionCell?.Value);
                 groups[fingerprint] = group;
                 groupOrder.Add(fingerprint);
             }
@@ -160,10 +179,11 @@ internal static class StatementOptimizer
         return groupOrder
             .Select(fp =>
             {
-                var (setClauses, keyValues) = groups[fp];
+                var (setClauses, keyValues, versionColumn, expectedVersion) = groups[fp];
                 return (OptimizedOperation)new GroupedUpdate(
                     vtable.TableName, vtable.Schema,
-                    setClauses, keyColumns, keyValues);
+                    setClauses, keyColumns, keyValues,
+                    versionColumn, expectedVersion);
             })
             .ToList();
     }

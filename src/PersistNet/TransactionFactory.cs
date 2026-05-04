@@ -11,6 +11,7 @@ public sealed class TransactionFactory : ITransactionFactory
     private readonly DbProviderFactory? _providerFactory;
     private readonly DbConnection? _connection;
     private readonly ILogger<TransactionFactory> _logger;
+    private readonly DbProvider _provider;
 
     /// <summary>
     /// Connection string mode. A new connection is opened per transaction and returned to
@@ -19,6 +20,7 @@ public sealed class TransactionFactory : ITransactionFactory
     public TransactionFactory(
         string connectionString,
         DbProviderFactory providerFactory,
+        DbProvider provider,
         ILogger<TransactionFactory> logger)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
@@ -27,6 +29,7 @@ public sealed class TransactionFactory : ITransactionFactory
 
         _connectionString = connectionString;
         _providerFactory = providerFactory;
+        _provider = provider;
         _logger = logger;
     }
 
@@ -34,12 +37,13 @@ public sealed class TransactionFactory : ITransactionFactory
     /// Direct connection mode. The provided connection is used as-is and its lifecycle
     /// is managed by the caller.
     /// </summary>
-    public TransactionFactory(DbConnection connection, ILogger<TransactionFactory> logger)
+    public TransactionFactory(DbConnection connection, DbProvider provider, ILogger<TransactionFactory> logger)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(logger);
 
         _connection = connection;
+        _provider = provider;
         _logger = logger;
     }
 
@@ -49,7 +53,7 @@ public sealed class TransactionFactory : ITransactionFactory
         {
             _logger.LogDebug("Opening transaction on provided DbConnection.");
             var dbTransaction = await _connection.BeginTransactionAsync();
-            return new Transaction(_connection, dbTransaction, ownsConnection: false, _logger);
+            return new Transaction(_connection, dbTransaction, ownsConnection: false, _provider, _logger);
         }
         else
         {
@@ -61,7 +65,7 @@ public sealed class TransactionFactory : ITransactionFactory
             await conn.OpenAsync();
 
             var dbTransaction = await conn.BeginTransactionAsync();
-            return new Transaction(conn, dbTransaction, ownsConnection: true, _logger);
+            return new Transaction(conn, dbTransaction, ownsConnection: true, _provider, _logger);
         }
     }
 }

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Data.Common;
 
 namespace PersistNet.DbAbstraction;
@@ -12,5 +13,6 @@ namespace PersistNet.DbAbstraction;
 /// </summary>
 internal sealed class SqlitePersistence : AnsiSqlPersistenceBase
 {
-    internal SqlitePersistence(DbConnection connection) : base(connection) { }
+    internal SqlitePersistence(DbConnection connection, DbTransaction? transaction = null, ILogger? logger = null)
+        : base(connection, transaction, logger) { }
 }

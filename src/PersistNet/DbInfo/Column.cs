@@ -19,6 +19,7 @@ internal sealed class Column
     public bool Nullable { get; }
     public bool Unique { get; }
     public bool IsDiscriminator { get; }
+    public bool IsVersion { get; }
     public int? Size { get; }
     public int? Precision { get; }
     public int? Scale { get; }
@@ -34,6 +35,7 @@ internal sealed class Column
         bool nullable,
         bool unique,
         bool isDiscriminator,
+        bool isVersion,
         int? size,
         int? precision,
         int? scale,
@@ -49,6 +51,7 @@ internal sealed class Column
         Nullable = nullable;
         Unique = unique;
         IsDiscriminator = isDiscriminator;
+        IsVersion = isVersion;
         Size = size;
         Precision = precision;
         Scale = scale;

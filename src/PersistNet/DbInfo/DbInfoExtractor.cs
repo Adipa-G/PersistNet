@@ -76,6 +76,7 @@ internal static class DbInfoExtractor
             attr.Nullable,
             attr.Unique,
             attr.IsDiscriminator,
+            attr.IsVersion,
             attr.Size < 0 ? null : attr.Size,
             attr.Precision < 0 ? null : attr.Precision,
             attr.Scale < 0 ? null : attr.Scale,

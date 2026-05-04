@@ -25,6 +25,14 @@ public class ColumnInfo : Attribute
     public bool IsDiscriminator { get; set; } = false;
 
     /// <summary>
+    /// Marks this column as the optimistic-concurrency version column.
+    /// PersistNet will automatically append <c>AND "Col" = @current</c> to UPDATE WHERE
+    /// clauses and increment the value by 1 in the SET clause.
+    /// Only one version column per entity is supported.
+    /// </summary>
+    public bool IsVersion { get; set; } = false;
+
+    /// <summary>
     /// Maximum length / size. Set to -1 (default) to leave unspecified.
     /// </summary>
     public int Size { get; set; } = -1;

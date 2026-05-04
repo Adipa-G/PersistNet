@@ -318,4 +318,102 @@ public class StatementOptimizerTests
         // null and "Widget" must not collapse into the same group.
         Assert.Equal(2, result.Count);
     }
+
+    // -------------------------------------------------------------------------
+    // Version column (optimistic concurrency)
+    // -------------------------------------------------------------------------
+
+    [TableInfo(TableName = "ver_products")]
+    private class VersionedProduct
+    {
+        [ColumnInfo(Key = true)]
+        public int Id { get; set; }
+
+        [ColumnInfo]
+        public string Name { get; set; } = "";
+
+        [ColumnInfo(IsVersion = true)]
+        public long Version { get; set; }
+    }
+
+    private static VRow VersionedUpdateRow(int id, string name, long version)
+    {
+        var row = new VRow(OperationType.Update);
+        row.Cells.Add(new VCell("Id", id));
+        row.Cells.Add(new VCell("Name", name));
+        row.Cells.Add(new VCell("Version", version) { IsVersion = true });
+        return row;
+    }
+
+    [Fact]
+    public void Given_VersionedUpdate_When_Optimize_Then_SetClauseHasIncrementedVersion()
+    {
+        WarmCache();
+        var vtable = new VTable("ver_products", null, OperationType.Update, new List<VRow>
+        {
+            VersionedUpdateRow(id: 1, name: "Widget", version: 3L)
+        });
+
+        var result = StatementOptimizer.Optimize(vtable);
+
+        var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
+        var versionSet = Assert.Single(gu.SetClauses, sc =>
+            string.Equals(sc.ColumnName, "Version", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(4L, versionSet.Value); // 3 + 1
+    }
+
+    [Fact]
+    public void Given_VersionedUpdate_When_Optimize_Then_ExpectedVersionValueIsOriginal()
+    {
+        WarmCache();
+        var vtable = new VTable("ver_products", null, OperationType.Update, new List<VRow>
+        {
+            VersionedUpdateRow(id: 1, name: "Widget", version: 5L)
+        });
+
+        var result = StatementOptimizer.Optimize(vtable);
+
+        var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
+        Assert.Equal("Version", gu.VersionColumn, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(5L, gu.ExpectedVersionValue);
+    }
+
+    [Fact]
+    public void Given_MultipleRowsSameVersion_When_Optimize_Then_GroupedIntoOneUpdate()
+    {
+        WarmCache();
+        var vtable = new VTable("ver_products", null, OperationType.Update, new List<VRow>
+        {
+            VersionedUpdateRow(id: 1, name: "A", version: 2L),
+            VersionedUpdateRow(id: 2, name: "A", version: 2L) // same name & version → same group
+        });
+
+        var result = StatementOptimizer.Optimize(vtable);
+
+        var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
+        Assert.Equal(2, gu.KeyValues.Count);
+        Assert.Equal(3L, gu.SetClauses.Single(sc =>
+            string.Equals(sc.ColumnName, "Version", StringComparison.OrdinalIgnoreCase)).Value);
+    }
+
+    [Fact]
+    public void Given_RowsWithDifferentVersions_When_Optimize_Then_SeparateGroupsPerVersion()
+    {
+        WarmCache();
+        var vtable = new VTable("ver_products", null, OperationType.Update, new List<VRow>
+        {
+            VersionedUpdateRow(id: 1, name: "X", version: 1L),
+            VersionedUpdateRow(id: 2, name: "X", version: 2L) // same name, different version → different group
+        });
+
+        var result = StatementOptimizer.Optimize(vtable);
+
+        // Different expected-version values force separate SQL statements.
+        Assert.Equal(2, result.Count);
+        Assert.All(result, op => Assert.IsType<GroupedUpdate>(op));
+
+        var groups = result.Cast<GroupedUpdate>().ToList();
+        Assert.Equal(1L, groups[0].ExpectedVersionValue);
+        Assert.Equal(2L, groups[1].ExpectedVersionValue);
+    }
 }

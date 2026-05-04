@@ -35,16 +35,29 @@ internal sealed record MultiRowInsert(
 /// <summary>
 /// UPDATE operation where every affected row shares the same SET-clause values.
 /// Corresponds to:  UPDATE t SET c1=v1, c2=v2 WHERE keyCol IN (k1, k2, …)
+/// When <see cref="VersionColumn"/> is set, the WHERE clause also includes
+/// <c>AND VersionCol = <see cref="ExpectedVersionValue"/></c> for optimistic concurrency.
 /// </summary>
 internal sealed record GroupedUpdate(
     string TableName,
     string? Schema,
-    /// <summary>Columns and values for the SET clause — identical for every row in this group.</summary>
+    /// <summary>Columns and values for the SET clause — identical for every row in this group.
+    /// When a version column is present, the version SET clause has the incremented (new) value.
+    /// </summary>
     IReadOnlyList<SetClause> SetClauses,
     /// <summary>Ordered key column names used in the WHERE clause.</summary>
     IReadOnlyList<string> KeyColumns,
     /// <summary>One inner list per entity row; values are aligned to <see cref="KeyColumns"/>.</summary>
-    IReadOnlyList<IReadOnlyList<object?>> KeyValues)
+    IReadOnlyList<IReadOnlyList<object?>> KeyValues,
+    /// <summary>
+    /// Name of the optimistic-concurrency version column, or <c>null</c> when the table has none.
+    /// </summary>
+    string? VersionColumn = null,
+    /// <summary>
+    /// The version value that must exist in the DB row (the value before this update).
+    /// Rows in this group all share this expected version because they were grouped by fingerprint.
+    /// </summary>
+    object? ExpectedVersionValue = null)
     : OptimizedOperation(TableName, Schema, OperationType.Update);
 
 /// <summary>

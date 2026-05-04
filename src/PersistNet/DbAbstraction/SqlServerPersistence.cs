@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using PersistNet.Entities;
 using System.Collections.Generic;
 using System.Data.Common;
@@ -20,7 +21,8 @@ namespace PersistNet.DbAbstraction;
 /// </summary>
 internal sealed class SqlServerPersistence : AnsiSqlPersistenceBase
 {
-    internal SqlServerPersistence(DbConnection connection) : base(connection) { }
+    internal SqlServerPersistence(DbConnection connection, DbTransaction? transaction = null, ILogger? logger = null)
+        : base(connection, transaction, logger) { }
 
     protected override string QuoteIdentifier(string name) => $"[{name}]";
 

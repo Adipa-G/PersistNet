@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using PersistNet.DbInfo;
 using PersistNet.Entities;
 using System;
@@ -19,10 +20,14 @@ namespace PersistNet.DbAbstraction;
 internal abstract class AnsiSqlPersistenceBase : IDbPersistence
 {
     protected DbConnection Connection { get; }
+    private readonly DbTransaction? _dbTransaction;
+    private readonly ILogger? _logger;
 
-    protected AnsiSqlPersistenceBase(DbConnection connection)
+    protected AnsiSqlPersistenceBase(DbConnection connection, DbTransaction? transaction = null, ILogger? logger = null)
     {
         Connection = connection;
+        _dbTransaction = transaction;
+        _logger = logger;
     }
 
     // ── Identifier quoting (virtual — SQL Server overrides with []) ─────────
@@ -36,10 +41,12 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
 
     // ── Execution helper ────────────────────────────────────────────────────
 
-    private async Task RunAsync(string sql, List<(string Name, object? Value)> parameters, CancellationToken ct)
+    private async Task<int> RunAsync(string sql, List<(string Name, object? Value)> parameters, CancellationToken ct)
     {
+        _logger?.LogDebug("Executing SQL: {Sql} | Params: {Params}", sql, FormatParams(parameters));
         using var cmd = Connection.CreateCommand();
         cmd.CommandText = sql;
+        cmd.Transaction = _dbTransaction;
         foreach (var (name, value) in parameters)
         {
             var p = cmd.CreateParameter();
@@ -47,8 +54,13 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
             p.Value = value ?? DBNull.Value;
             cmd.Parameters.Add(p);
         }
-        await cmd.ExecuteNonQueryAsync(ct);
+        return await cmd.ExecuteNonQueryAsync(ct);
     }
+
+    private static string FormatParams(List<(string Name, object? Value)> parameters)
+        => parameters.Count == 0
+            ? "(none)"
+            : string.Join(", ", parameters.Select(p => $"{p.Name}={p.Value ?? "NULL"}"));
 
     // ── Dispatcher ──────────────────────────────────────────────────────────
 
@@ -98,10 +110,19 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
 
     // ── UPDATE ──────────────────────────────────────────────────────────────
 
-    public Task ExecuteUpdateAsync(GroupedUpdate update, CancellationToken ct = default)
+    public async Task ExecuteUpdateAsync(GroupedUpdate update, CancellationToken ct = default)
     {
         var (sql, parameters) = BuildUpdateSql(update);
-        return RunAsync(sql, parameters, ct);
+        var rowsAffected = await RunAsync(sql, parameters, ct);
+        var expectedRows = update.KeyValues.Count;
+        if (rowsAffected != expectedRows)
+        {
+            if (update.VersionColumn is not null)
+                throw new ConcurrencyException(update.TableName, expectedRows, rowsAffected);
+            throw new InvalidOperationException(
+                $"UPDATE on '{update.TableName}' expected {expectedRows} row(s) affected, "
+                + $"but got {rowsAffected}. The row(s) may have been deleted by another transaction.");
+        }
     }
 
     protected internal virtual (string Sql, List<(string Name, object? Value)> Parameters)
@@ -119,8 +140,16 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
         }
 
         var wherePart = BuildKeyWhereClause(update.KeyColumns, update.KeyValues, parameters, ref idx);
-        var sql = $"UPDATE {QualifiedTable(update.TableName, update.Schema)} " +
-                  $"SET {string.Join(", ", setParts)} WHERE {wherePart}";
+
+        if (update.VersionColumn is not null)
+        {
+            var pName = $"@p{idx++}";
+            parameters.Add((pName, update.ExpectedVersionValue));
+            wherePart += $" AND {QuoteIdentifier(update.VersionColumn)}={pName}";
+        }
+
+        var sql = $"UPDATE {QualifiedTable(update.TableName, update.Schema)} "
+                + $"SET {string.Join(", ", setParts)} WHERE {wherePart}";
         return (sql, parameters);
     }
 
@@ -222,8 +251,12 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
         if (discriminatorCol is not null)
             sql += $" AND {QuoteIdentifier(discriminatorCol.ColumnName)} = @p1";
 
+        _logger?.LogDebug("Executing SQL: {Sql} | Params: @p0={Key}{Disc}", sql, keyValue,
+            discriminatorCol is not null ? $", @p1={subType!.DiscriminatorValue}" : "");
+
         using var cmd = Connection.CreateCommand();
         cmd.CommandText = sql;
+        cmd.Transaction = _dbTransaction;
 
         var keyParam = cmd.CreateParameter();
         keyParam.ParameterName = "@p0";

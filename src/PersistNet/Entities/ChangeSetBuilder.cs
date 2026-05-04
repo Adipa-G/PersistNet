@@ -329,7 +329,11 @@ internal sealed class ChangeSetBuilder
                 ? subType.DiscriminatorValue
                 : col.Getter(entity);
 
-            row.Cells.Add(new VCell(col.ColumnName, value));
+            var cell = (op == OperationType.Update && col.IsVersion)
+                ? new VCell(col.ColumnName, value) { IsVersion = true }
+                : new VCell(col.ColumnName, value);
+
+            row.Cells.Add(cell);
         }
 
         if (subType != null)

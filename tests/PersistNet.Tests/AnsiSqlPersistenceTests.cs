@@ -285,4 +285,55 @@ public class AnsiSqlPersistenceTests
         var setParam = parameters.Single(p => p.Name == "@p0");
         Assert.Null(setParam.Value);
     }
+
+    // ── Version column (optimistic concurrency) ──────────────────────────────
+
+    private static GroupedUpdate MakeVersionedUpdate(string table,
+        IReadOnlyList<SetClause> set,
+        IReadOnlyList<string> keyCols,
+        string versionColumn,
+        object? expectedVersion,
+        params IReadOnlyList<object?>[] keyValues) =>
+        new(table, null, set, keyCols, keyValues, versionColumn, expectedVersion);
+
+    [Fact]
+    public void Given_UpdateWithVersionColumn_When_BuildUpdateSql_Then_WhereIncludesVersionPredicate()
+    {
+        var ansi = new AnsiPersistence();
+        var update = MakeVersionedUpdate(
+            "items",
+            new[] { new SetClause("Label", "NewLabel"), new SetClause("Version", 4L) },
+            new[] { "Id" },
+            versionColumn: "Version",
+            expectedVersion: 3L,
+            new object?[] { 1 });
+
+        var (sql, _) = ansi.BuildUpdateSql(update);
+
+        // WHERE must contain both the key predicate and the version guard.
+        Assert.Contains("\"Id\" IN", sql);
+        Assert.Contains("AND \"Version\"=", sql);
+    }
+
+    [Fact]
+    public void Given_UpdateWithVersionColumn_When_BuildUpdateSql_Then_VersionParamOrderIsAfterKeys()
+    {
+        var ansi = new AnsiPersistence();
+        var update = MakeVersionedUpdate(
+            "items",
+            new[] { new SetClause("Label", "X"), new SetClause("Version", 2L) },
+            new[] { "Id" },
+            versionColumn: "Version",
+            expectedVersion: 1L,
+            new object?[] { 7 });
+
+        var (_, parameters) = ansi.BuildUpdateSql(update);
+
+        // Parameters: @p0=Label SET, @p1=Version SET, @p2=Id key, @p3=expected version
+        Assert.Equal(4, parameters.Count);
+        Assert.Equal("X",  parameters[0].Value); // SET Label
+        Assert.Equal(2L,   parameters[1].Value); // SET Version (new)
+        Assert.Equal(7,    parameters[2].Value); // WHERE Id
+        Assert.Equal(1L,   parameters[3].Value); // WHERE Version = expected
+    }
 }

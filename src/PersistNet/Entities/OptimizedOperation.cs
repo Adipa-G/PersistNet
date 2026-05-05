@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace PersistNet.Entities;
@@ -29,7 +30,14 @@ internal sealed record MultiRowInsert(
     /// <summary>Ordered list of column names, consistent across all <see cref="ValueRows"/>.</summary>
     IReadOnlyList<string> Columns,
     /// <summary>One inner list per entity row; values are aligned to <see cref="Columns"/>.</summary>
-    IReadOnlyList<IReadOnlyList<object?>> ValueRows)
+    IReadOnlyList<IReadOnlyList<object?>> ValueRows,
+    /// <summary>
+    /// Parallel to <see cref="ValueRows"/>: a callback per row that receives the
+    /// DB-generated key after INSERT, or <c>null</c> for rows that don't need hydration.
+    /// When the entire list is <c>null</c>, no hydration is needed and the batch-insert
+    /// path is used.
+    /// </summary>
+    IReadOnlyList<Action<object?>?>? KeyCallbacks = null)
     : OptimizedOperation(TableName, Schema, OperationType.Insert);
 
 /// <summary>

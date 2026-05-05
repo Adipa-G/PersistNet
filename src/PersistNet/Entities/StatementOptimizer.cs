@@ -64,7 +64,12 @@ internal static class StatementOptimizer
             return (IReadOnlyList<object?>)values;
         }).ToList();
 
-        return new[] { new MultiRowInsert(vtable.TableName, vtable.Schema, columns, valueRows) };
+        // Propagate any key-hydration callbacks from VRows.
+        var callbacks = vtable.Rows.Select(r => r.OnKeyGenerated).ToList();
+        var hasCallbacks = callbacks.Any(c => c is not null);
+
+        return new[] { new MultiRowInsert(vtable.TableName, vtable.Schema, columns, valueRows,
+            hasCallbacks ? callbacks : null) };
     }
 
     // -------------------------------------------------------------------------

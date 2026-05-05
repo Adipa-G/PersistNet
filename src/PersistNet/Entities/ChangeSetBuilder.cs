@@ -323,8 +323,29 @@ internal sealed class ChangeSetBuilder
             return row;
         }
 
+        // For INSERT with an auto-increment PK: skip the PK column (DB generates it)
+        // and register a callback to write the generated value back to the entity.
+        if (op == OperationType.Insert)
+        {
+            var autoIncKey = table.Columns.FirstOrDefault(c => c.IsKey && c.AutoIncrement);
+            if (autoIncKey is not null)
+            {
+                var keyCol     = autoIncKey;
+                var entityRef  = entity;
+                row.OnKeyGenerated = generatedId =>
+                {
+                    var converted = Convert.ChangeType(generatedId, keyCol.Property.PropertyType);
+                    keyCol.Property.SetValue(entityRef, converted);
+                };
+            }
+        }
+
         foreach (var col in table.Columns)
         {
+            // Skip auto-increment PK on INSERT — the DB generates the value.
+            if (op == OperationType.Insert && col.IsKey && col.AutoIncrement)
+                continue;
+
             var value = col.IsDiscriminator && subType != null
                 ? subType.DiscriminatorValue
                 : col.Getter(entity);

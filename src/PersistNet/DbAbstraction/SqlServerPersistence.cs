@@ -2,6 +2,8 @@ using Microsoft.Extensions.Logging;
 using PersistNet.Entities;
 using System.Collections.Generic;
 using System.Data.Common;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PersistNet.DbAbstraction;
 
@@ -54,5 +56,12 @@ internal sealed class SqlServerPersistence : AnsiSqlPersistenceBase
             predicates.Add($"({string.Join(" AND ", andParts)})");
         }
         return string.Join(" OR ", predicates);
+    }
+
+    protected override async Task<object?> GetLastInsertedKeyAsync(CancellationToken ct)
+    {
+        using var cmd = CreateCommand();
+        cmd.CommandText = "SELECT SCOPE_IDENTITY()";
+        return await cmd.ExecuteScalarAsync(ct);
     }
 }

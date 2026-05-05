@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Data.Common;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PersistNet.DbAbstraction;
 
@@ -15,4 +17,11 @@ internal sealed class SqlitePersistence : AnsiSqlPersistenceBase
 {
     internal SqlitePersistence(DbConnection connection, DbTransaction? transaction = null, ILogger? logger = null)
         : base(connection, transaction, logger) { }
+
+    protected override async Task<object?> GetLastInsertedKeyAsync(CancellationToken ct)
+    {
+        using var cmd = CreateCommand();
+        cmd.CommandText = "SELECT last_insert_rowid()";
+        return await cmd.ExecuteScalarAsync(ct);
+    }
 }

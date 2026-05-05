@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -270,5 +271,64 @@ public class TransactionIntegrationTests : IAsyncDisposable
         txn.Save(new TxnProduct { Id = 1, Name = "Ghost", Price = 0 });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => txn.CommitAsync());
+    }
+
+    // ── Auto-increment PK hydration ───────────────────────────────────────────
+
+    [TableInfo(TableName = "auto_items")]
+    private class AutoItem
+    {
+        [ColumnInfo(Key = true, AutoIncrement = true)] public int    Id   { get; set; }
+        [ColumnInfo]                                   public string Name { get; set; } = "";
+    }
+
+    private async Task CreateAutoItemsTable()
+    {
+        using var cmd = _connection.CreateCommand();
+        // SQLite AUTOINCREMENT guarantees the Id is never reused and is strictly increasing.
+        cmd.CommandText = "CREATE TABLE auto_items (Id INTEGER PRIMARY KEY AUTOINCREMENT, Name TEXT NOT NULL)";
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    [Fact]
+    public async Task Save_AutoIncrementEntity_IdHydratedAfterCommit()
+    {
+        await CreateAutoItemsTable();
+
+        var item = new AutoItem { Name = "First" }; // Id = 0 (default) → INSERT
+        await using var txn = await _factory.OpenTransactionAsync();
+        txn.Save(item);
+        await txn.CommitAsync();
+
+        // Id must have been written back from last_insert_rowid().
+        Assert.NotEqual(0, item.Id);
+
+        // Confirm the row is in the DB with the generated Id.
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT Id FROM auto_items WHERE Name = 'First'";
+        var dbId = Convert.ToInt32(await cmd.ExecuteScalarAsync());
+        Assert.Equal(dbId, item.Id);
+    }
+
+    [Fact]
+    public async Task Save_MultipleAutoIncrementEntities_EachIdHydratedUniquely()
+    {
+        await CreateAutoItemsTable();
+
+        var a = new AutoItem { Name = "A" };
+        var b = new AutoItem { Name = "B" };
+        var c = new AutoItem { Name = "C" };
+
+        await using var txn = await _factory.OpenTransactionAsync();
+        txn.Save(a);
+        txn.Save(b);
+        txn.Save(c);
+        await txn.CommitAsync();
+
+        // All three Ids must be distinct and non-zero.
+        Assert.NotEqual(0, a.Id);
+        Assert.NotEqual(0, b.Id);
+        Assert.NotEqual(0, c.Id);
+        Assert.Equal(3, new[] { a.Id, b.Id, c.Id }.Distinct().Count());
     }
 }

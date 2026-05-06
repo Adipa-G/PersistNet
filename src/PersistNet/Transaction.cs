@@ -87,8 +87,12 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
     public async Task<T> GetAsync<T>(object id) where T : class
     {
         var result = await _persistence.FindByKeyAsync<T>(id);
-        return result ?? throw new InvalidOperationException(
+        if (result is null) throw new InvalidOperationException(
             $"No {typeof(T).Name} with key '{id}' was found.");
+
+        // Snapshot the loaded state so that a later Save() can omit unchanged columns.
+        _changeSetBuilder.TrackSnapshot(result);
+        return result;
     }
 
     public async ValueTask DisposeAsync()

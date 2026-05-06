@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using PersistNet.DbInfo;
 using PersistNet.Entities.VirtualDb;
 
@@ -9,6 +10,13 @@ namespace PersistNet.Entities;
 internal sealed class ChangeSetBuilder
 {
     private readonly ChangeSet _changeSet = new();
+
+    /// <summary>
+    /// Snapshots of column values captured at <c>GetAsync</c> time, keyed by object
+    /// reference.  Used to detect dirty columns and suppress no-op UPDATEs.
+    /// </summary>
+    private readonly Dictionary<object, Dictionary<string, object?>> _snapshots =
+        new(ReferenceEqualityComparer.Instance);
 
     // -------------------------------------------------------------------------
     // Public API
@@ -31,6 +39,27 @@ internal sealed class ChangeSetBuilder
     /// for inspection in tests; use <see cref="GetOrderedBatches"/> at commit time.
     /// </summary>
     public IReadOnlyList<PendingOperation> PendingOperations => _changeSet.Operations;
+
+    /// <summary>
+    /// Records a snapshot of <paramref name="entity"/>'s current column values.
+    /// Called by <see cref="Transaction.GetAsync{T}"/> so that a subsequent
+    /// <see cref="Save"/> can suppress unchanged columns from the UPDATE SET clause.
+    /// </summary>
+    internal void TrackSnapshot(object entity)
+    {
+        var table = DbInfoCache.FindTable(entity.GetType());
+        if (table is null) return;
+
+        var subType = DbInfoCache.FindSubType(table, entity.GetType());
+        var allColumns = subType is null
+            ? (IEnumerable<Column>)table.Columns
+            : table.Columns.Concat(subType.ExtraColumns);
+
+        _snapshots[entity] = allColumns.ToDictionary(
+            c => c.ColumnName,
+            c => c.Getter(entity),
+            StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Applies a topological sort over the accumulated change set and collapses
@@ -67,7 +96,24 @@ internal sealed class ChangeSetBuilder
 
         // 3. Map this entity and enqueue.
         var op = IsInsert(entity, table) ? OperationType.Insert : OperationType.Update;
-        _changeSet.Add(new PendingOperation(op, table.Name, table.Schema, MapToRow(entity, table, op)));
+        _snapshots.TryGetValue(entity, out var snapshot);
+        var row = MapToRow(entity, table, op, snapshot);
+
+        // Dirty tracking: if nothing in the SET clause changed, skip the UPDATE.
+        // Version cells alone do not constitute a meaningful change — the version only
+        // bumps when real data changes (the WHERE guard is still needed in that case).
+        if (op == OperationType.Update)
+        {
+            var keyOrVersionColNames = table.Columns
+                .Where(c => c.IsKey || c.IsVersion)
+                .Select(c => c.ColumnName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (row.Cells.All(c => keyOrVersionColNames.Contains(c.ColumnName)))
+                goto AfterEnqueue; // only key/version cells — nothing actually changed
+        }
+
+        _changeSet.Add(new PendingOperation(op, table.Name, table.Schema, row));
+        AfterEnqueue:
 
         // 4. O2M children reference this entity's PK — they are saved after us.
         foreach (var rel in table.Relationships.OfType<OneToManyRelationship>())
@@ -311,7 +357,8 @@ internal sealed class ChangeSetBuilder
         return true; // all keys are null/default → INSERT
     }
 
-    private static VRow MapToRow(object entity, Table table, OperationType op)
+    private static VRow MapToRow(object entity, Table table, OperationType op,
+        Dictionary<string, object?>? snapshot = null)
     {
         var row = new VRow(op);
         var subType = DbInfoCache.FindSubType(table, entity.GetType());
@@ -350,6 +397,15 @@ internal sealed class ChangeSetBuilder
                 ? subType.DiscriminatorValue
                 : col.Getter(entity);
 
+            // Dirty tracking: skip non-key, non-version columns on UPDATE when the
+            // value is identical to the snapshot captured at GetAsync time.
+            if (op == OperationType.Update
+                && !col.IsKey && !col.IsVersion
+                && snapshot is not null
+                && snapshot.TryGetValue(col.ColumnName, out var original)
+                && Equals(value, original))
+                continue;
+
             var cell = (op == OperationType.Update && col.IsVersion)
                 ? new VCell(col.ColumnName, value) { IsVersion = true }
                 : new VCell(col.ColumnName, value);
@@ -359,7 +415,17 @@ internal sealed class ChangeSetBuilder
 
         if (subType != null)
             foreach (var col in subType.ExtraColumns)
-                row.Cells.Add(new VCell(col.ColumnName, col.Getter(entity)));
+            {
+                var value = col.Getter(entity);
+                // Dirty tracking applies to subtype extra columns too.
+                if (op == OperationType.Update
+                    && !col.IsVersion
+                    && snapshot is not null
+                    && snapshot.TryGetValue(col.ColumnName, out var original)
+                    && Equals(value, original))
+                    continue;
+                row.Cells.Add(new VCell(col.ColumnName, value));
+            }
 
         return row;
     }

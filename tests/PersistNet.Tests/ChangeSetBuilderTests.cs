@@ -420,4 +420,60 @@ public class ChangeSetBuilderTests
         Assert.Contains(joinOp.Row.Cells, c => c.ColumnName == "StudentId" && Equals(c.Value, 5));
         Assert.Contains(joinOp.Row.Cells, c => c.ColumnName == "CourseId" && Equals(c.Value, 10));
     }
+
+    // -------------------------------------------------------------------------
+    // Dirty tracking
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public void Given_SnapshotAndOneFieldChanged_When_Save_Then_UpdateCellsContainOnlyDirtyField()
+    {
+        var builder = new ChangeSetBuilder();
+        var entity = new Customer { Id = 1, Name = "Alice" };
+
+        // Simulate GetAsync: snapshot the original state.
+        builder.TrackSnapshot(entity);
+
+        // Only change Name.
+        entity.Name = "Alice-Updated";
+        builder.Save(entity);
+
+        var op = builder.PendingOperations.Single(o => o.TableName == "customers");
+        Assert.Equal(OperationType.Update, op.Type);
+
+        // SET clause must contain Id (key) + Name (dirty) only — not duplicates, not extra.
+        Assert.Contains(op.Row.Cells, c => c.ColumnName == "Id");
+        Assert.Contains(op.Row.Cells, c => c.ColumnName == "Name" && Equals(c.Value, "Alice-Updated"));
+        Assert.Equal(2, op.Row.Cells.Count);
+    }
+
+    [Fact]
+    public void Given_NoSnapshot_When_Save_Then_UpdateContainsAllColumns()
+    {
+        var builder = new ChangeSetBuilder();
+        // No TrackSnapshot call — detached entity.
+        builder.Save(new Customer { Id = 2, Name = "Bob" });
+
+        var op = builder.PendingOperations.Single(o => o.TableName == "customers");
+        Assert.Equal(OperationType.Update, op.Type);
+
+        // Full UPDATE: all columns present.
+        Assert.Equal(2, op.Row.Cells.Count); // Id + Name
+        Assert.Contains(op.Row.Cells, c => c.ColumnName == "Id");
+        Assert.Contains(op.Row.Cells, c => c.ColumnName == "Name");
+    }
+
+    [Fact]
+    public void Given_SnapshotAndNothingChanged_When_Save_Then_NoPendingOperations()
+    {
+        var builder = new ChangeSetBuilder();
+        var entity = new Customer { Id = 3, Name = "Carol" };
+
+        builder.TrackSnapshot(entity);
+        // Save without changing anything.
+        builder.Save(entity);
+
+        // No-op UPDATE must be suppressed.
+        Assert.Empty(builder.PendingOperations.Where(o => o.TableName == "customers"));
+    }
 }

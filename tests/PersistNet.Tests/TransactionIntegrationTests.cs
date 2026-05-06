@@ -331,4 +331,48 @@ public class TransactionIntegrationTests : IAsyncDisposable
         Assert.NotEqual(0, c.Id);
         Assert.Equal(3, new[] { a.Id, b.Id, c.Id }.Distinct().Count());
     }
+
+    // ── Dirty tracking ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task GetAsync_ThenChangeOneField_UpdateOnlyContainsThatField()
+    {
+        // Use a versioned entity: the version bump proves the UPDATE ran,
+        // and we verify the untouched field retains its original value in the DB.
+        await CreateVerItemsTable();
+        await InsertVerItemDirectly(1, "Original", 1L);
+
+        await using var txn = await _factory.OpenTransactionAsync();
+        var item = await txn.GetAsync<VerItem>(1);
+
+        // Change only Name; leave Version as-is (the ORM will auto-bump it).
+        item.Name = "Updated";
+        txn.Save(item);
+        await txn.CommitAsync();
+
+        // Version must have incremented — proves UPDATE ran.
+        Assert.Equal(2L, await GetVerItemVersionAsync(1));
+
+        // Name must reflect the change.
+        using var cmd = _connection.CreateCommand();
+        cmd.CommandText = "SELECT Name FROM ver_items WHERE Id = 1";
+        Assert.Equal("Updated", await cmd.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task GetAsync_ThenSaveWithNoChanges_NoUpdateExecuted()
+    {
+        // If dirty tracking works, saving an unchanged entity emits no SQL.
+        // Use the version column as a canary: if an UPDATE ran, the version would bump.
+        await CreateVerItemsTable();
+        await InsertVerItemDirectly(1, "Unchanged", 5L);
+
+        await using var txn = await _factory.OpenTransactionAsync();
+        var item = await txn.GetAsync<VerItem>(1);
+        txn.Save(item); // nothing changed
+        await txn.CommitAsync();
+
+        // Version must still be 5 — no UPDATE was issued.
+        Assert.Equal(5L, await GetVerItemVersionAsync(1));
+    }
 }

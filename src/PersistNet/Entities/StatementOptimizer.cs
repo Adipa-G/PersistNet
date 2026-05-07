@@ -45,10 +45,14 @@ internal static class StatementOptimizer
 
     private static IReadOnlyList<OptimizedOperation> OptimizeInsert(VTable vtable)
     {
-        // Derive a stable column order from the first row.
-        var columns = vtable.Rows[0].Cells
-            .OrderBy(c => c.ColumnName, StringComparer.OrdinalIgnoreCase)
-            .Select(c => c.ColumnName)
+        // Derive a stable column order from the union of all row cells.
+        // Using a union (rather than only the first row) is necessary for
+        // Single-Table Inheritance: different subtype rows contribute different
+        // extra columns, and all of them must appear in the INSERT statement.
+        var columns = vtable.Rows
+            .SelectMany(r => r.Cells.Select(c => c.ColumnName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var columnIndex = columns

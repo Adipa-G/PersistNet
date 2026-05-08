@@ -16,18 +16,38 @@ internal static class DbInfoExtractor
     {
         var typeList = types.ToList();
 
-        var subTypeClrTypes = typeList
+        // STI subtypes are declared via [SubTypeInfo] on their parent type.
+        var stiSubTypeClrTypes = typeList
             .Where(t => t.GetCustomAttribute<TableInfo>() != null)
             .SelectMany(t => t.GetCustomAttributes<SubTypeInfo>())
             .Select(a => a.EntityType)
             .ToHashSet();
 
-        var tables = typeList
-            .Where(t => t.GetCustomAttribute<TableInfo>() != null && !subTypeClrTypes.Contains(t))
+        // TPT subtypes: have [TableInfo] declared on themselves AND their direct base type also has
+        // [TableInfo].  STI subtypes (already in stiSubTypeClrTypes) are excluded — they inherit
+        // [TableInfo] from their root, but they are not TPT subtypes.
+        var tptSubTypeClrTypes = typeList
+            .Where(t => t.GetCustomAttribute<TableInfo>() != null
+                     && !stiSubTypeClrTypes.Contains(t)
+                     && t.BaseType?.GetCustomAttribute<TableInfo>() != null)
+            .ToHashSet();
+
+        // Pass 1: build root tables (not STI subtypes, not TPT subtypes).
+        var rootTables = typeList
+            .Where(t => t.GetCustomAttribute<TableInfo>() != null
+                     && !stiSubTypeClrTypes.Contains(t)
+                     && !tptSubTypeClrTypes.Contains(t))
             .Select(BuildTable)
             .ToList();
 
-        return new Database(tables);
+        var rootTableByType = rootTables.ToDictionary(t => t.EntityType);
+
+        // Pass 2: build TPT subtype tables, wiring BaseTable to the root table.
+        var tptTables = tptSubTypeClrTypes
+            .Select(t => BuildTptSubtypeTable(t, rootTableByType))
+            .ToList();
+
+        return new Database(rootTables.Concat(tptTables).ToList());
     }
 
     private static Table BuildTable(Type type)
@@ -59,11 +79,11 @@ internal static class DbInfoExtractor
     {
         return type.GetProperties()
             .Where(p => p.GetCustomAttribute<ColumnInfo>() != null)
-            .Select(BuildColumn)
+            .Select(p => BuildColumn(p))
             .ToList();
     }
 
-    private static Column BuildColumn(PropertyInfo prop)
+    private static Column BuildColumn(PropertyInfo prop, bool overrideAutoIncrement = false)
     {
         var attr = prop.GetCustomAttribute<ColumnInfo>()!;
         return new Column(
@@ -72,7 +92,7 @@ internal static class DbInfoExtractor
             attr.ColumnType == ColumnType.Unknown ? null : attr.ColumnType,
             attr.Key,
             attr.KeyOrder,
-            attr.AutoIncrement,
+            overrideAutoIncrement ? false : attr.AutoIncrement,
             attr.Nullable,
             attr.Unique,
             attr.IsDiscriminator,
@@ -81,6 +101,46 @@ internal static class DbInfoExtractor
             attr.Precision < 0 ? null : attr.Precision,
             attr.Scale < 0 ? null : attr.Scale,
             attr.DefaultValue);
+    }
+
+    /// <summary>
+    /// Builds a TPT join-table <see cref="Table"/> for a subtype whose direct base
+    /// also carries <c>[TableInfo]</c>.  Only the PK (explicitly assigned, not DB-generated)
+    /// and the subtype's own-declared columns are included; inherited non-PK columns
+    /// (which live in the base table) are intentionally excluded.
+    /// </summary>
+    private static Table BuildTptSubtypeTable(Type type, Dictionary<Type, Table> rootTableByType)
+    {
+        var tableAttr = type.GetCustomAttribute<TableInfo>()!;
+        var baseTable = rootTableByType[type.BaseType!];
+
+        // Include: PK from anywhere in hierarchy (AutoIncrement overridden to false —
+        // the join table's Id is explicitly assigned from the base INSERT, not DB-generated)
+        // plus columns declared directly on this subtype.
+        var columns = type.GetProperties()
+            .Where(p => p.GetCustomAttribute<ColumnInfo>() != null)
+            .Where(p => p.DeclaringType == type || p.GetCustomAttribute<ColumnInfo>()!.Key)
+            .Select(p =>
+            {
+                var attr = p.GetCustomAttribute<ColumnInfo>()!;
+                return attr.Key ? BuildColumn(p, overrideAutoIncrement: true) : BuildColumn(p);
+            })
+            .ToList();
+
+        var indexes = type.GetCustomAttributes<IndexInfo>()
+            .Select(a => new Index(a.Name, a.Columns, a.Unique))
+            .ToList();
+
+        return new Table(
+            tableAttr.TableName ?? type.Name,
+            tableAttr.Schema,
+            type,
+            columns,
+            null,
+            Array.Empty<SubType>(),
+            BuildRelationships(type),
+            indexes,
+            baseTable);
     }
 
     private static List<SubType> BuildSubTypes(Type baseType, IReadOnlyList<Column> baseColumns)
@@ -92,7 +152,7 @@ internal static class DbInfoExtractor
             {
                 var extraColumns = a.EntityType.GetProperties()
                     .Where(p => p.GetCustomAttribute<ColumnInfo>() != null && !basePropertyNames.Contains(p.Name))
-                    .Select(BuildColumn)
+                    .Select(p => BuildColumn(p))
                     .ToList();
                 return new SubType(a.EntityType, a.DiscriminatorValue, extraColumns);
             })

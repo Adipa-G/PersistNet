@@ -51,14 +51,18 @@ internal sealed class ChangeSetBuilder
         if (table is null) return;
 
         var subType = DbInfoCache.FindSubType(table, entity.GetType());
-        var allColumns = subType is null
-            ? (IEnumerable<Column>)table.Columns
-            : table.Columns.Concat(subType.ExtraColumns);
+        IEnumerable<Column> allColumns = subType is not null
+            ? table.Columns.Concat(subType.ExtraColumns)
+            : table.BaseTable is not null
+                ? table.BaseTable.Columns.Concat(table.Columns)
+                : table.Columns;
 
-        _snapshots[entity] = allColumns.ToDictionary(
-            c => c.ColumnName,
-            c => c.Getter(entity),
-            StringComparer.OrdinalIgnoreCase);
+        _snapshots[entity] = allColumns
+            .GroupBy(c => c.ColumnName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.First().Getter(entity),
+                StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -97,22 +101,29 @@ internal sealed class ChangeSetBuilder
         // 3. Map this entity and enqueue.
         var op = IsInsert(entity, table) ? OperationType.Insert : OperationType.Update;
         _snapshots.TryGetValue(entity, out var snapshot);
-        var row = MapToRow(entity, table, op, snapshot);
 
-        // Dirty tracking: if nothing in the SET clause changed, skip the UPDATE.
-        // Version cells alone do not constitute a meaningful change — the version only
-        // bumps when real data changes (the WHERE guard is still needed in that case).
-        if (op == OperationType.Update)
+        if (table.BaseTable != null)
         {
-            var keyOrVersionColNames = table.Columns
-                .Where(c => c.IsKey || c.IsVersion)
-                .Select(c => c.ColumnName)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (row.Cells.All(c => keyOrVersionColNames.Contains(c.ColumnName)))
-                goto AfterEnqueue; // only key/version cells — nothing actually changed
+            // TPT: split into a base-table row and a join-table row.
+            EnqueueSaveTpt(entity, table, op, snapshot);
         }
+        else
+        {
+            var row = MapToRow(entity, table, op, snapshot);
 
-        _changeSet.Add(new PendingOperation(op, table.Name, table.Schema, row));
+            // Dirty tracking: if nothing in the SET clause changed, skip the UPDATE.
+            if (op == OperationType.Update)
+            {
+                var keyOrVersionColNames = table.Columns
+                    .Where(c => c.IsKey || c.IsVersion)
+                    .Select(c => c.ColumnName)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (row.Cells.All(c => keyOrVersionColNames.Contains(c.ColumnName)))
+                    goto AfterEnqueue;
+            }
+
+            _changeSet.Add(new PendingOperation(op, table.Name, table.Schema, row));
+        }
         AfterEnqueue:
 
         // 4. O2M children reference this entity's PK — they are saved after us.
@@ -152,6 +163,77 @@ internal sealed class ChangeSetBuilder
                 var joinRow = BuildJoinRow(entity, table, right, rightTable, rel, OperationType.Insert);
                 _changeSet.Add(new PendingOperation(OperationType.Insert, joinName, rel.JoinTableSchema, joinRow));
             }
+        }
+    }
+
+    /// <summary>
+    /// Handles the TPT split: emits separate INSERT/UPDATE operations for the
+    /// base table and the join (subtype) table.
+    /// <para>
+    /// INSERT: The base row carries the <c>OnKeyGenerated</c> callback.  When the
+    /// base INSERT fires and returns the DB-generated Id, the callback both sets
+    /// <c>entity.Id</c> and injects the Id cell into <paramref name="joinRow"/>
+    /// before the join-table INSERT is optimised and executed.
+    /// </para>
+    /// </summary>
+    private void EnqueueSaveTpt(object entity, Table table, OperationType op,
+        Dictionary<string, object?>? snapshot)
+    {
+        var baseTable = table.BaseTable!;
+
+        if (op == OperationType.Insert)
+        {
+            var baseRow = MapToRow(entity, baseTable, OperationType.Insert, null);
+
+            // Build the join row without the PK cell — it will be injected by the
+            // base INSERT's OnKeyGenerated callback (or directly below for non-AutoIncrement).
+            var joinRow = new VRow(OperationType.Insert);
+            foreach (var col in table.Columns.Where(c => !c.IsKey))
+                joinRow.Cells.Add(new VCell(col.ColumnName, col.Getter(entity)));
+
+            if (baseTable.Columns.Any(c => c.IsKey && c.AutoIncrement))
+            {
+                // Extend the base row callback to also inject the generated Id into the
+                // join row's cells.  OptimizeInsert is called lazily (after this fires),
+                // so joinRow.Cells will contain the correct Id when the join INSERT runs.
+                var originalCallback = baseRow.OnKeyGenerated;
+                var pkCol = table.Columns.First(c => c.IsKey);
+                baseRow.OnKeyGenerated = generatedId =>
+                {
+                    originalCallback?.Invoke(generatedId); // sets entity.Id
+                    var converted = Convert.ChangeType(generatedId, pkCol.Property.PropertyType);
+                    joinRow.Cells.Insert(0, new VCell(pkCol.ColumnName, converted));
+                };
+            }
+            else
+            {
+                // No AutoIncrement — PK is already known; include it in the join row.
+                var pkCol = table.Columns.First(c => c.IsKey);
+                joinRow.Cells.Insert(0, new VCell(pkCol.ColumnName, pkCol.Getter(entity)));
+            }
+
+            _changeSet.Add(new PendingOperation(OperationType.Insert, baseTable.Name, baseTable.Schema, baseRow));
+            _changeSet.Add(new PendingOperation(OperationType.Insert, table.Name, table.Schema, joinRow));
+        }
+        else // UPDATE
+        {
+            // Base table: dirty-check base columns and skip UPDATE if nothing changed.
+            var baseRow = MapToRow(entity, baseTable, OperationType.Update, snapshot);
+            var baseKeyOrVersionCols = baseTable.Columns
+                .Where(c => c.IsKey || c.IsVersion)
+                .Select(c => c.ColumnName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!baseRow.Cells.All(c => baseKeyOrVersionCols.Contains(c.ColumnName)))
+                _changeSet.Add(new PendingOperation(OperationType.Update, baseTable.Name, baseTable.Schema, baseRow));
+
+            // Join table: dirty-check own columns and skip UPDATE if nothing changed.
+            var joinRow = MapToRow(entity, table, OperationType.Update, snapshot);
+            var joinKeyOrVersionCols = table.Columns
+                .Where(c => c.IsKey || c.IsVersion)
+                .Select(c => c.ColumnName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (!joinRow.Cells.All(c => joinKeyOrVersionCols.Contains(c.ColumnName)))
+                _changeSet.Add(new PendingOperation(OperationType.Update, table.Name, table.Schema, joinRow));
         }
     }
 
@@ -201,10 +283,24 @@ internal sealed class ChangeSetBuilder
             if (related != null) EnqueueDelete(related);
         }
 
-        // 4. Delete this entity (key columns only — the WHERE clause).
-        _changeSet.Add(new PendingOperation(
-            OperationType.Delete, table.Name, table.Schema,
-            MapToRow(entity, table, OperationType.Delete)));
+        // 4. Delete this entity.
+        if (table.BaseTable != null)
+        {
+            // TPT: delete the join row first, then the base row.
+            // Topological sort (OrderByDescending) will enforce this ordering at commit time.
+            _changeSet.Add(new PendingOperation(
+                OperationType.Delete, table.Name, table.Schema,
+                MapToRow(entity, table, OperationType.Delete)));
+            _changeSet.Add(new PendingOperation(
+                OperationType.Delete, table.BaseTable.Name, table.BaseTable.Schema,
+                MapToRow(entity, table.BaseTable, OperationType.Delete)));
+        }
+        else
+        {
+            _changeSet.Add(new PendingOperation(
+                OperationType.Delete, table.Name, table.Schema,
+                MapToRow(entity, table, OperationType.Delete)));
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -262,6 +358,14 @@ internal sealed class ChangeSetBuilder
                         deps[joinName].Add(table.Name);
                     if (deps.ContainsKey(rightTable.Name))
                         deps[joinName].Add(rightTable.Name);
+                }
+
+                // TPT join-table edges: the subtype join table depends on its base table.
+                if (table.BaseTable != null
+                    && deps.ContainsKey(table.Name)
+                    && deps.ContainsKey(table.BaseTable.Name))
+                {
+                    deps[table.Name].Add(table.BaseTable.Name);
                 }
             }
         }

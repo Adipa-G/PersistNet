@@ -274,6 +274,10 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
                 $"FindByKeyAsync does not yet support composite keys. " +
                 $"Table '{table.Name}' has {keyCols.Count} key columns.");
 
+        // TPT: use a JOIN query to hydrate both base and join columns in one round-trip.
+        if (table.BaseTable != null)
+            return await FindByKeyTptAsync<T>(table, keyValue, ct);
+
         var keyCol   = keyCols[0];
         var subType  = DbInfoCache.FindSubType(table, typeof(T));
 
@@ -333,6 +337,64 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
     }
 
     // ── Type coercion helper ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Executes a JOIN SELECT for a TPT subtype: base-table columns aliased as
+    /// <c>b.*</c> plus subtype-own columns aliased as <c>j.*</c> (PK excluded from
+    /// the join side to avoid duplicate ambiguity).
+    /// </summary>
+    private async Task<T?> FindByKeyTptAsync<T>(Table table, object keyValue, CancellationToken ct)
+        where T : class
+    {
+        var baseTable = table.BaseTable!;
+        var keyCol = baseTable.Columns.First(c => c.IsKey);
+
+        var baseColSelect = string.Join(", ",
+            baseTable.Columns.Select(c => $"b.{QuoteIdentifier(c.ColumnName)}"));
+        var joinColSelect = string.Join(", ",
+            table.Columns.Where(c => !c.IsKey).Select(c => $"j.{QuoteIdentifier(c.ColumnName)}"));
+        var colList = string.IsNullOrEmpty(joinColSelect)
+            ? baseColSelect
+            : $"{baseColSelect}, {joinColSelect}";
+
+        var sql = $"SELECT {colList} " +
+                  $"FROM {QualifiedTable(baseTable.Name, baseTable.Schema)} b " +
+                  $"JOIN {QualifiedTable(table.Name, table.Schema)} j " +
+                  $"ON j.{QuoteIdentifier(keyCol.ColumnName)} = b.{QuoteIdentifier(keyCol.ColumnName)} " +
+                  $"WHERE b.{QuoteIdentifier(keyCol.ColumnName)} = @p0";
+
+        _logger?.LogDebug("Executing SQL (TPT JOIN): {Sql} | @p0={Key}", sql, keyValue);
+
+        using var cmd = Connection.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Transaction = _dbTransaction;
+
+        var keyParam = cmd.CreateParameter();
+        keyParam.ParameterName = "@p0";
+        keyParam.Value = keyValue ?? DBNull.Value;
+        cmd.Parameters.Add(keyParam);
+
+        using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return null;
+
+        var selectColumns = baseTable.Columns
+            .Concat(table.Columns.Where(c => !c.IsKey))
+            .ToList();
+
+        var instance = Activator.CreateInstance<T>();
+        for (var i = 0; i < reader.FieldCount; i++)
+        {
+            var colName = reader.GetName(i);
+            var col = selectColumns.FirstOrDefault(c =>
+                string.Equals(c.ColumnName, colName, StringComparison.OrdinalIgnoreCase));
+            if (col is null) continue;
+
+            var rawValue = reader.IsDBNull(i) ? null : reader.GetValue(i);
+            col.Property.SetValue(instance, ConvertValue(rawValue, col.Property.PropertyType));
+        }
+
+        return instance;
+    }
 
     /// <summary>
     /// Coerces a value read from <see cref="DbDataReader"/> to the CLR property type.

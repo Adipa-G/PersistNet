@@ -14,6 +14,12 @@ internal sealed class Table
     public IReadOnlyList<Relationship> Relationships { get; }
     public IReadOnlyList<Index> Indexes { get; }
 
+    /// <summary>
+    /// For Table-Per-Type (TPT) subclass tables, the base table that holds the
+    /// shared columns.  <c>null</c> for root tables and STI tables.
+    /// </summary>
+    public Table? BaseTable { get; }
+
     internal Table(
         string name,
         string? schema,
@@ -22,7 +28,8 @@ internal sealed class Table
         Column? discriminatorColumn,
         IReadOnlyList<SubType> subTypes,
         IReadOnlyList<Relationship> relationships,
-        IReadOnlyList<Index> indexes)
+        IReadOnlyList<Index> indexes,
+        Table? baseTable = null)
     {
         Name = name;
         Schema = schema;
@@ -32,5 +39,6 @@ internal sealed class Table
         SubTypes = subTypes;
         Relationships = relationships;
         Indexes = indexes;
+        BaseTable = baseTable;
     }
 }

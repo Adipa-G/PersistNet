@@ -274,9 +274,9 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
                 $"FindByKeyAsync does not yet support composite keys. " +
                 $"Table '{table.Name}' has {keyCols.Count} key columns.");
 
-        // TPT: use a JOIN query to hydrate both base and join columns in one round-trip.
+        // Joined subtype: entity data spans two tables — use a JOIN query to hydrate both.
         if (table.BaseTable != null)
-            return await FindByKeyTptAsync<T>(table, keyValue, ct);
+            return await FindByKeyJoinedSubtypeAsync<T>(table, keyValue, ct);
 
         var keyCol   = keyCols[0];
         var subType  = DbInfoCache.FindSubType(table, typeof(T));
@@ -339,11 +339,11 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
     // ── Type coercion helper ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Executes a JOIN SELECT for a TPT subtype: base-table columns aliased as
-    /// <c>b.*</c> plus subtype-own columns aliased as <c>j.*</c> (PK excluded from
-    /// the join side to avoid duplicate ambiguity).
+    /// Executes a JOIN SELECT for a joined-subtype entity: base-table columns aliased as
+    /// <c>b.*</c> plus the subtype's own columns aliased as <c>j.*</c> (PK excluded from
+    /// the subtype side to avoid duplicate ambiguity).
     /// </summary>
-    private async Task<T?> FindByKeyTptAsync<T>(Table table, object keyValue, CancellationToken ct)
+    private async Task<T?> FindByKeyJoinedSubtypeAsync<T>(Table table, object keyValue, CancellationToken ct)
         where T : class
     {
         var baseTable = table.BaseTable!;
@@ -363,7 +363,7 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
                   $"ON j.{QuoteIdentifier(keyCol.ColumnName)} = b.{QuoteIdentifier(keyCol.ColumnName)} " +
                   $"WHERE b.{QuoteIdentifier(keyCol.ColumnName)} = @p0";
 
-        _logger?.LogDebug("Executing SQL (TPT JOIN): {Sql} | @p0={Key}", sql, keyValue);
+        _logger?.LogDebug("Executing SQL (joined-subtype): {Sql} | @p0={Key}", sql, keyValue);
 
         using var cmd = Connection.CreateCommand();
         cmd.CommandText = sql;

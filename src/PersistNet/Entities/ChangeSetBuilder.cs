@@ -104,8 +104,8 @@ internal sealed class ChangeSetBuilder
 
         if (table.BaseTable != null)
         {
-            // TPT: split into a base-table row and a join-table row.
-            EnqueueSaveTpt(entity, table, op, snapshot);
+            // Joined subtype: entity data is split across its base table and its own table.
+            EnqueueSaveJoinedSubtype(entity, table, op, snapshot);
         }
         else
         {
@@ -167,16 +167,16 @@ internal sealed class ChangeSetBuilder
     }
 
     /// <summary>
-    /// Handles the TPT split: emits separate INSERT/UPDATE operations for the
-    /// base table and the join (subtype) table.
+    /// Handles saving a joined-subtype entity: emits separate INSERT/UPDATE operations
+    /// for the base table and the subtype's own table.
     /// <para>
     /// INSERT: The base row carries the <c>OnKeyGenerated</c> callback.  When the
     /// base INSERT fires and returns the DB-generated Id, the callback both sets
-    /// <c>entity.Id</c> and injects the Id cell into <paramref name="joinRow"/>
-    /// before the join-table INSERT is optimised and executed.
+    /// <c>entity.Id</c> and injects the Id cell into the subtype row
+    /// before that INSERT is optimised and executed.
     /// </para>
     /// </summary>
-    private void EnqueueSaveTpt(object entity, Table table, OperationType op,
+    private void EnqueueSaveJoinedSubtype(object entity, Table table, OperationType op,
         Dictionary<string, object?>? snapshot)
     {
         var baseTable = table.BaseTable!;
@@ -286,8 +286,8 @@ internal sealed class ChangeSetBuilder
         // 4. Delete this entity.
         if (table.BaseTable != null)
         {
-            // TPT: delete the join row first, then the base row.
-            // Topological sort (OrderByDescending) will enforce this ordering at commit time.
+            // Joined subtype: delete the subtype row first, then the base row.
+            // Topological sort (OrderByDescending) enforces this ordering at commit time.
             _changeSet.Add(new PendingOperation(
                 OperationType.Delete, table.Name, table.Schema,
                 MapToRow(entity, table, OperationType.Delete)));
@@ -360,7 +360,7 @@ internal sealed class ChangeSetBuilder
                         deps[joinName].Add(rightTable.Name);
                 }
 
-                // TPT join-table edges: the subtype join table depends on its base table.
+                // Joined-subtype edges: the subtype table depends on its base table.
                 if (table.BaseTable != null
                     && deps.ContainsKey(table.Name)
                     && deps.ContainsKey(table.BaseTable.Name))

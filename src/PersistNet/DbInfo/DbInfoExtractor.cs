@@ -23,31 +23,32 @@ internal static class DbInfoExtractor
             .Select(a => a.EntityType)
             .ToHashSet();
 
-        // TPT subtypes: have [TableInfo] declared on themselves AND their direct base type also has
-        // [TableInfo].  STI subtypes (already in stiSubTypeClrTypes) are excluded — they inherit
-        // [TableInfo] from their root, but they are not TPT subtypes.
-        var tptSubTypeClrTypes = typeList
+        // Joined-subtype types: have [TableInfo] declared on themselves AND their direct base type
+        // also has [TableInfo] — so the entity's data is split across two tables joined by PK.
+        // STI subtypes (already in stiSubTypeClrTypes) are excluded — they inherit [TableInfo]
+        // from their root but are not joined subtypes.
+        var joinedSubtypeClrTypes = typeList
             .Where(t => t.GetCustomAttribute<TableInfo>() != null
                      && !stiSubTypeClrTypes.Contains(t)
                      && t.BaseType?.GetCustomAttribute<TableInfo>() != null)
             .ToHashSet();
 
-        // Pass 1: build root tables (not STI subtypes, not TPT subtypes).
+        // Pass 1: build root tables (not STI subtypes, not joined subtypes).
         var rootTables = typeList
             .Where(t => t.GetCustomAttribute<TableInfo>() != null
                      && !stiSubTypeClrTypes.Contains(t)
-                     && !tptSubTypeClrTypes.Contains(t))
+                     && !joinedSubtypeClrTypes.Contains(t))
             .Select(BuildTable)
             .ToList();
 
         var rootTableByType = rootTables.ToDictionary(t => t.EntityType);
 
-        // Pass 2: build TPT subtype tables, wiring BaseTable to the root table.
-        var tptTables = tptSubTypeClrTypes
-            .Select(t => BuildTptSubtypeTable(t, rootTableByType))
+        // Pass 2: build joined-subtype tables, wiring BaseTable to the root table.
+        var joinedSubtypeTables = joinedSubtypeClrTypes
+            .Select(t => BuildJoinedSubtypeTable(t, rootTableByType))
             .ToList();
 
-        return new Database(rootTables.Concat(tptTables).ToList());
+        return new Database(rootTables.Concat(joinedSubtypeTables).ToList());
     }
 
     private static Table BuildTable(Type type)
@@ -104,12 +105,12 @@ internal static class DbInfoExtractor
     }
 
     /// <summary>
-    /// Builds a TPT join-table <see cref="Table"/> for a subtype whose direct base
-    /// also carries <c>[TableInfo]</c>.  Only the PK (explicitly assigned, not DB-generated)
-    /// and the subtype's own-declared columns are included; inherited non-PK columns
-    /// (which live in the base table) are intentionally excluded.
+    /// Builds the subtype-side <see cref="Table"/> for a joined-subtype entity — one whose
+    /// direct base also carries <c>[TableInfo]</c> and therefore owns a separate base table.
+    /// Only the PK (explicitly assigned, not DB-generated) and columns declared directly on
+    /// this subtype are included; inherited non-PK columns live in the base table.
     /// </summary>
-    private static Table BuildTptSubtypeTable(Type type, Dictionary<Type, Table> rootTableByType)
+    private static Table BuildJoinedSubtypeTable(Type type, Dictionary<Type, Table> rootTableByType)
     {
         var tableAttr = type.GetCustomAttribute<TableInfo>()!;
         var baseTable = rootTableByType[type.BaseType!];

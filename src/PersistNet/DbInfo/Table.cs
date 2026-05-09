@@ -15,8 +15,10 @@ internal sealed class Table
     public IReadOnlyList<Index> Indexes { get; }
 
     /// <summary>
-    /// For Table-Per-Type (TPT) subclass tables, the base table that holds the
-    /// shared columns.  <c>null</c> for root tables and STI tables.
+    /// For joined-subtype tables, the base table that holds the shared columns.
+    /// When non-null, the entity's data is split across this table (subtype-own columns)
+    /// and <see cref="BaseTable"/> (shared columns), joined by primary key.
+    /// <c>null</c> for root tables and STI tables.
     /// </summary>
     public Table? BaseTable { get; }
 

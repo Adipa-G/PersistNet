@@ -84,11 +84,11 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
         await CommitAsync();
     }
 
-    public async Task<T> GetAsync<T>(object id) where T : class
+    public async Task<T> GetAsync<T>(params object[] keyValues) where T : class
     {
-        var result = await _persistence.FindByKeyAsync<T>(id);
+        var result = await _persistence.FindByKeyAsync<T>(keyValues);
         if (result is null) throw new InvalidOperationException(
-            $"No {typeof(T).Name} with key '{id}' was found.");
+            $"No {typeof(T).Name} with key ({string.Join(", ", keyValues)}) was found.");
 
         // Snapshot the loaded state so that a later Save() can omit unchanged columns.
         _changeSetBuilder.TrackSnapshot(result);

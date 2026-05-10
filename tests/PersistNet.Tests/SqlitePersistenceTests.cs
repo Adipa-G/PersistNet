@@ -151,7 +151,7 @@ public class SqlitePersistenceTests : IAsyncDisposable
             new[] { new object?[] { 42, "Gadget", 1500 } });
         await _persistence.ExecuteInsertAsync(insert);
 
-        var product = await _persistence.FindByKeyAsync<PstProduct>(42);
+        var product = await _persistence.FindByKeyAsync<PstProduct>(new object[] { 42 });
 
         Assert.NotNull(product);
         Assert.Equal(42,       product!.Id);
@@ -164,7 +164,7 @@ public class SqlitePersistenceTests : IAsyncDisposable
     {
         await CreateProductsTable();
 
-        var result = await _persistence.FindByKeyAsync<PstProduct>(99);
+        var result = await _persistence.FindByKeyAsync<PstProduct>(new object[] { 99 });
 
         Assert.Null(result);
     }

@@ -207,9 +207,10 @@ internal sealed class ChangeSetBuilder
             }
             else
             {
-                // No AutoIncrement — PK is already known; include it in the join row.
-                var pkCol = table.Columns.First(c => c.IsKey);
-                joinRow.Cells.Insert(0, new VCell(pkCol.ColumnName, pkCol.Getter(entity)));
+                // No AutoIncrement — PK is already known; include all key columns in the join row.
+                var pkCells = table.Columns.Where(c => c.IsKey).OrderBy(c => c.KeyOrder)
+                    .Select(pkCol => new VCell(pkCol.ColumnName, pkCol.Getter(entity)));
+                joinRow.Cells.InsertRange(0, pkCells);
             }
 
             _changeSet.Add(new PendingOperation(OperationType.Insert, baseTable.Name, baseTable.Schema, baseRow));

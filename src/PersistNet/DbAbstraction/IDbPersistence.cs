@@ -27,9 +27,9 @@ internal interface IDbPersistence
     Task ExecuteAsync(OptimizedOperation operation, CancellationToken ct = default);
 
     /// <summary>
-    /// Reads a single entity of type <typeparamref name="T"/> by its primary key value.
+    /// Reads a single entity of type <typeparamref name="T"/> by its primary key value(s).
     /// Returns <c>null</c> when no matching row exists.
-    /// Composite-key entities are not yet supported.
+    /// Pass values in <see cref="ColumnInfo.KeyOrder"/> sequence.
     /// </summary>
-    Task<T?> FindByKeyAsync<T>(object keyValue, CancellationToken ct = default) where T : class;
+    Task<T?> FindByKeyAsync<T>(object[] keyValues, CancellationToken ct = default) where T : class;
 }

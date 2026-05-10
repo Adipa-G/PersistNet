@@ -262,24 +262,23 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
 
     // ── SELECT / read ────────────────────────────────────────────────────────
 
-    public async Task<T?> FindByKeyAsync<T>(object keyValue, CancellationToken ct = default) where T : class
+    public async Task<T?> FindByKeyAsync<T>(object[] keyValues, CancellationToken ct = default) where T : class
     {
         var table = DbInfoCache.FindTable(typeof(T))
             ?? throw new InvalidOperationException(
                 $"Type '{typeof(T).Name}' is not registered in DbInfoCache.");
 
-        var keyCols = table.Columns.Where(c => c.IsKey).ToList();
-        if (keyCols.Count > 1)
-            throw new NotSupportedException(
-                $"FindByKeyAsync does not yet support composite keys. " +
-                $"Table '{table.Name}' has {keyCols.Count} key columns.");
+        var keyCols = table.Columns.Where(c => c.IsKey).OrderBy(c => c.KeyOrder).ToList();
+        if (keyCols.Count != keyValues.Length)
+            throw new ArgumentException(
+                $"Table '{table.Name}' has {keyCols.Count} key column(s) but {keyValues.Length} value(s) were provided. " +
+                $"Pass values in KeyOrder sequence.");
 
         // Joined subtype: entity data spans two tables — use a JOIN query to hydrate both.
         if (table.BaseTable != null)
-            return await FindByKeyJoinedSubtypeAsync<T>(table, keyValue, ct);
+            return await FindByKeyJoinedSubtypeAsync<T>(table, keyValues, ct);
 
-        var keyCol   = keyCols[0];
-        var subType  = DbInfoCache.FindSubType(table, typeof(T));
+        var subType = DbInfoCache.FindSubType(table, typeof(T));
 
         // Build SELECT column list: root columns + extra subtype columns when relevant.
         IEnumerable<Column> selectColumns = subType is null
@@ -287,33 +286,39 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
             : table.Columns.Concat(subType.ExtraColumns);
 
         var colList = string.Join(", ", selectColumns.Select(c => QuoteIdentifier(c.ColumnName)));
+        var whereParts = keyCols.Select((col, i) => $"{QuoteIdentifier(col.ColumnName)} = @p{i}");
         var sql = $"SELECT {colList} FROM {QualifiedTable(table.Name, table.Schema)} " +
-                  $"WHERE {QuoteIdentifier(keyCol.ColumnName)} = @p0";
+                  $"WHERE {string.Join(" AND ", whereParts)}";
 
         // Narrow to the correct subtype row when T is a registered subtype.
         var discriminatorCol = subType is not null
             ? table.Columns.FirstOrDefault(c => c.IsDiscriminator)
             : null;
 
+        var discParamIndex = keyCols.Count;
         if (discriminatorCol is not null)
-            sql += $" AND {QuoteIdentifier(discriminatorCol.ColumnName)} = @p1";
+            sql += $" AND {QuoteIdentifier(discriminatorCol.ColumnName)} = @p{discParamIndex}";
 
-        _logger?.LogDebug("Executing SQL: {Sql} | Params: @p0={Key}{Disc}", sql, keyValue,
-            discriminatorCol is not null ? $", @p1={subType!.DiscriminatorValue}" : "");
+        _logger?.LogDebug("Executing SQL: {Sql} | Keys: [{Keys}]{Disc}", sql,
+            string.Join(", ", keyValues),
+            discriminatorCol is not null ? $", @p{discParamIndex}={subType!.DiscriminatorValue}" : "");
 
         using var cmd = Connection.CreateCommand();
         cmd.CommandText = sql;
         cmd.Transaction = _dbTransaction;
 
-        var keyParam = cmd.CreateParameter();
-        keyParam.ParameterName = "@p0";
-        keyParam.Value = keyValue ?? DBNull.Value;
-        cmd.Parameters.Add(keyParam);
+        for (var i = 0; i < keyCols.Count; i++)
+        {
+            var p = cmd.CreateParameter();
+            p.ParameterName = $"@p{i}";
+            p.Value = keyValues[i] ?? DBNull.Value;
+            cmd.Parameters.Add(p);
+        }
 
         if (discriminatorCol is not null)
         {
             var discParam = cmd.CreateParameter();
-            discParam.ParameterName = "@p1";
+            discParam.ParameterName = $"@p{discParamIndex}";
             discParam.Value = subType!.DiscriminatorValue;
             cmd.Parameters.Add(discParam);
         }
@@ -343,11 +348,11 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
     /// <c>b.*</c> plus the subtype's own columns aliased as <c>j.*</c> (PK excluded from
     /// the subtype side to avoid duplicate ambiguity).
     /// </summary>
-    private async Task<T?> FindByKeyJoinedSubtypeAsync<T>(Table table, object keyValue, CancellationToken ct)
+    private async Task<T?> FindByKeyJoinedSubtypeAsync<T>(Table table, object[] keyValues, CancellationToken ct)
         where T : class
     {
         var baseTable = table.BaseTable!;
-        var keyCol = baseTable.Columns.First(c => c.IsKey);
+        var keyCols = baseTable.Columns.Where(c => c.IsKey).OrderBy(c => c.KeyOrder).ToList();
 
         var baseColSelect = string.Join(", ",
             baseTable.Columns.Select(c => $"b.{QuoteIdentifier(c.ColumnName)}"));
@@ -357,22 +362,30 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
             ? baseColSelect
             : $"{baseColSelect}, {joinColSelect}";
 
+        var joinOn = string.Join(" AND ", keyCols.Select(c =>
+            $"j.{QuoteIdentifier(c.ColumnName)} = b.{QuoteIdentifier(c.ColumnName)}"));
+        var whereClause = string.Join(" AND ", keyCols.Select((c, i) =>
+            $"b.{QuoteIdentifier(c.ColumnName)} = @p{i}"));
+
         var sql = $"SELECT {colList} " +
                   $"FROM {QualifiedTable(baseTable.Name, baseTable.Schema)} b " +
-                  $"JOIN {QualifiedTable(table.Name, table.Schema)} j " +
-                  $"ON j.{QuoteIdentifier(keyCol.ColumnName)} = b.{QuoteIdentifier(keyCol.ColumnName)} " +
-                  $"WHERE b.{QuoteIdentifier(keyCol.ColumnName)} = @p0";
+                  $"JOIN {QualifiedTable(table.Name, table.Schema)} j ON {joinOn} " +
+                  $"WHERE {whereClause}";
 
-        _logger?.LogDebug("Executing SQL (joined-subtype): {Sql} | @p0={Key}", sql, keyValue);
+        _logger?.LogDebug("Executing SQL (joined-subtype): {Sql} | Keys: [{Keys}]", sql,
+            string.Join(", ", keyValues));
 
         using var cmd = Connection.CreateCommand();
         cmd.CommandText = sql;
         cmd.Transaction = _dbTransaction;
 
-        var keyParam = cmd.CreateParameter();
-        keyParam.ParameterName = "@p0";
-        keyParam.Value = keyValue ?? DBNull.Value;
-        cmd.Parameters.Add(keyParam);
+        for (var i = 0; i < keyCols.Count; i++)
+        {
+            var p = cmd.CreateParameter();
+            p.ParameterName = $"@p{i}";
+            p.Value = keyValues[i] ?? DBNull.Value;
+            cmd.Parameters.Add(p);
+        }
 
         using var reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;

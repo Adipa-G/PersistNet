@@ -9,6 +9,6 @@ public interface ITransaction : IAsyncDisposable
     Task<T> SaveAndCommitAsync<T>(T entity);
     void Delete<T>(T entity);
     Task DeleteAndCommitAsync<T>(T entity);
-    Task<T> GetAsync<T>(params object[] keyValues) where T : class;
+    IEntityQuery<T> GetAsync<T>(params object[] keyValues) where T : class;
     Task CommitAsync();
 }

@@ -1,4 +1,6 @@
+using PersistNet.DbInfo;
 using PersistNet.Entities;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -32,4 +34,21 @@ internal interface IDbPersistence
     /// Pass values in <see cref="ColumnInfo.KeyOrder"/> sequence.
     /// </summary>
     Task<T?> FindByKeyAsync<T>(object[] keyValues, CancellationToken ct = default) where T : class;
+
+    /// <summary>
+    /// Loads the value of a single navigation property on <paramref name="entity"/> by
+    /// executing the appropriate SQL for the relationship type.
+    /// Returns a single related entity (for M2O / O2O) or a <see cref="System.Collections.IList"/>
+    /// of the related entity type (for O2M / M2M), or <c>null</c> when nothing is found.
+    /// </summary>
+    Task<object?> LoadNavigationAsync(object entity, Table entityTable, Relationship relationship, CancellationToken ct = default);
+
+    /// <summary>
+    /// Batch-loads a navigation property for all <paramref name="entities"/> in a single
+    /// SQL statement (using an IN clause), returning a <see cref="BatchNavResult"/> that maps
+    /// each parent entity's lookup key to its loaded related value(s).
+    /// Automatically chunks the IN values when they exceed the provider's
+    /// <c>MaxParameterBatchSize</c>.
+    /// </summary>
+    Task<BatchNavResult> LoadNavigationBatchAsync(IReadOnlyList<object> entities, Table entityTable, Relationship relationship, CancellationToken ct = default);
 }

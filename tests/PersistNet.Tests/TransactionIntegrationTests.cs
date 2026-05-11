@@ -172,7 +172,7 @@ public class TransactionIntegrationTests : IAsyncDisposable
         await using var txn = await _factory.OpenTransactionAsync();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => txn.GetAsync<TxnProduct>(99));
+            async () => await txn.GetAsync<TxnProduct>(99));
     }
 
     // ── SaveAndCommitAsync convenience ────────────────────────────────────────

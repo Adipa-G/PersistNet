@@ -110,8 +110,8 @@ public sealed class CompositeKeyScenarioTests : ScenarioTestBase
         await SeedRowAsync(1, 1, "Widget", 1.0);
 
         await using var txn = await Factory.OpenTransactionAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            txn.GetAsync<OrderLine>(1, 99));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await txn.GetAsync<OrderLine>(1, 99));
     }
 
     /// <summary>

@@ -18,6 +18,12 @@ internal sealed class SqlitePersistence : AnsiSqlPersistenceBase
     internal SqlitePersistence(DbConnection connection, DbTransaction? transaction = null, ILogger? logger = null)
         : base(connection, transaction, logger) { }
 
+    /// <summary>
+    /// <c>Microsoft.Data.Sqlite</c> 8.x bundles SQLite ≥ 3.32 whose
+    /// <c>SQLITE_LIMIT_VARIABLE_NUMBER</c> is 32766.  Use 32000 as a safe ceiling.
+    /// </summary>
+    protected override int MaxParameterBatchSize => 32000;
+
     protected override async Task<object?> GetLastInsertedKeyAsync(CancellationToken ct)
     {
         using var cmd = CreateCommand();

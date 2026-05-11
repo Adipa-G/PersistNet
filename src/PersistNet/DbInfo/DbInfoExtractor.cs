@@ -170,7 +170,7 @@ internal static class DbInfoExtractor
             if (o2o != null)
             {
                 result.Add(new OneToOneRelationship(
-                    o2o.Name, o2o.RelatedType, prop,
+                    o2o.Name ?? prop.Name, o2o.RelatedType, prop,
                     o2o.FromKeys, o2o.ToKeys, o2o.MappedBy, o2o.Nullable,
                     ToNullable(o2o.OnDelete), ToNullable(o2o.OnUpdate)));
                 continue;
@@ -179,7 +179,7 @@ internal static class DbInfoExtractor
             var o2m = prop.GetCustomAttribute<OneToManyRelationshipInfo>();
             if (o2m != null)
             {
-                result.Add(new OneToManyRelationship(o2m.Name, o2m.RelatedType, prop, o2m.MappedBy));
+                result.Add(new OneToManyRelationship(o2m.Name ?? prop.Name, o2m.RelatedType, prop, o2m.MappedBy));
                 continue;
             }
 
@@ -187,7 +187,7 @@ internal static class DbInfoExtractor
             if (m2o != null)
             {
                 result.Add(new ManyToOneRelationship(
-                    m2o.Name, m2o.RelatedType, prop,
+                    m2o.Name ?? prop.Name, m2o.RelatedType, prop,
                     m2o.FromKeys, m2o.ToKeys, m2o.Nullable,
                     ToNullable(m2o.OnDelete), ToNullable(m2o.OnUpdate)));
                 continue;
@@ -197,7 +197,7 @@ internal static class DbInfoExtractor
             if (m2m != null)
             {
                 result.Add(new ManyToManyRelationship(
-                    m2m.Name, m2m.RelatedType, prop,
+                    m2m.Name ?? prop.Name, m2m.RelatedType, prop,
                     m2m.JoinTableName, m2m.JoinTableSchema,
                     m2m.LeftKeyColumns, m2m.RightKeyColumns,
                     m2m.LeftForeignKeys, m2m.RightForeignKeys,

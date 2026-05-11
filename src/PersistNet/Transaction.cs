@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Data.Common;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using PersistNet.DbAbstraction;
+using PersistNet.DbInfo;
 using PersistNet.Entities;
 using PersistNet.Entities.VirtualDb;
 
@@ -84,15 +87,168 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
         await CommitAsync();
     }
 
-    public async Task<T> GetAsync<T>(params object[] keyValues) where T : class
+    public IEntityQuery<T> GetAsync<T>(params object[] keyValues) where T : class
+        => new EntityQuery<T>(this, keyValues);
+
+    internal async Task<T> LoadEntityCoreAsync<T>(object[] keyValues) where T : class
     {
         var result = await _persistence.FindByKeyAsync<T>(keyValues);
         if (result is null) throw new InvalidOperationException(
             $"No {typeof(T).Name} with key ({string.Join(", ", keyValues)}) was found.");
 
-        // Snapshot the loaded state so that a later Save() can omit unchanged columns.
         _changeSetBuilder.TrackSnapshot(result);
         return result;
+    }
+
+    internal IReadOnlyList<string> GetAllRelationshipNames(Type type)
+    {
+        var table = DbInfoCache.FindTable(type);
+        if (table is null) return Array.Empty<string>();
+        return table.Relationships
+            .Where(r => r.Name is not null)
+            .Select(r => r.Name!)
+            .ToList();
+    }
+
+    internal async Task LoadEntityGraphAsync(object entity, IReadOnlyList<string> includes, HashSet<string> visited)
+    {
+        var table = DbInfoCache.FindTable(entity.GetType());
+        if (table is null) return;
+
+        // Build a visited key from this entity's PK values to detect cycles.
+        var keyTable = table.BaseTable ?? table;
+        var pkStr = string.Join(":", keyTable.Columns
+            .Where(c => c.IsKey)
+            .OrderBy(c => c.KeyOrder)
+            .Select(c => c.Getter(entity)?.ToString() ?? "null"));
+        var visitedKey = $"{entity.GetType().FullName}:{pkStr}";
+        if (!visited.Add(visitedKey)) return;
+
+        foreach (var propName in includes)
+        {
+            var rel = table.Relationships.FirstOrDefault(r => r.Name == propName);
+            if (rel is null) continue;
+
+            var rawValue = await _persistence.LoadNavigationAsync(entity, table, rel);
+            if (rawValue is null) continue;
+
+            rel.Property.SetValue(entity, rawValue);
+
+            if (rawValue is System.Collections.IEnumerable enumerable and not string)
+            {
+                foreach (var item in enumerable)
+                {
+                    if (item is null) continue;
+                    _changeSetBuilder.TrackSnapshot(item);
+                    await RecurseIntoRelatedAsync(item, visited);
+                }
+            }
+            else
+            {
+                _changeSetBuilder.TrackSnapshot(rawValue);
+                await RecurseIntoRelatedAsync(rawValue, visited);
+            }
+        }
+    }
+
+    private async Task RecurseIntoRelatedAsync(object entity, HashSet<string> visited)
+    {
+        var relatedTable = DbInfoCache.FindTable(entity.GetType());
+        if (relatedTable is null) return;
+        var relIncludes = relatedTable.Relationships
+            .Where(r => r.Name is not null)
+            .Select(r => r.Name!)
+            .ToList();
+        if (relIncludes.Count > 0)
+            await LoadEntityGraphAsync(entity, relIncludes, visited);
+    }
+
+    /// <summary>
+    /// Batch version of <see cref="LoadEntityGraphAsync"/>: loads all navigation
+    /// properties for every entity in <paramref name="entities"/> using IN-clause SQL
+    /// instead of per-entity queries, eliminating the N+1 problem when the caller
+    /// already has a list of entities to fully hydrate.
+    /// </summary>
+    internal async Task LoadEntityGraphBatchAsync(
+        IReadOnlyList<object> entities,
+        IReadOnlyList<string> includes,
+        HashSet<string> visited)
+    {
+        if (entities.Count == 0) return;
+
+        var entityType = entities[0].GetType();
+        var table = DbInfoCache.FindTable(entityType);
+        if (table is null) return;
+
+        // Mark each entity visited so we don't re-enter during recursion.
+        foreach (var entity in entities)
+        {
+            var keyTable = table.BaseTable ?? table;
+            var pkStr = string.Join(":", keyTable.Columns
+                .Where(c => c.IsKey)
+                .OrderBy(c => c.KeyOrder)
+                .Select(c => c.Getter(entity)?.ToString() ?? "null"));
+            visited.Add($"{entityType.FullName}:{pkStr}");
+        }
+
+        foreach (var propName in includes)
+        {
+            var rel = table.Relationships.FirstOrDefault(r => r.Name == propName);
+            if (rel is null) continue;
+
+            var batchResult = await _persistence.LoadNavigationBatchAsync(entities, table, rel, default);
+
+            var nextLevelEntities = new List<object>();
+
+            foreach (var entity in entities)
+            {
+                var lookupKey = batchResult.EntityKeySelector(entity);
+                if (lookupKey is null) continue;
+                if (!batchResult.Entries.TryGetValue(lookupKey, out var rawValue) || rawValue is null) continue;
+
+                rel.Property.SetValue(entity, rawValue);
+
+                if (rawValue is System.Collections.IEnumerable enumerable and not string)
+                {
+                    foreach (var item in enumerable)
+                    {
+                        if (item is null) continue;
+                        _changeSetBuilder.TrackSnapshot(item);
+                        nextLevelEntities.Add(item);
+                    }
+                }
+                else
+                {
+                    _changeSetBuilder.TrackSnapshot(rawValue);
+                    nextLevelEntities.Add(rawValue);
+                }
+            }
+
+            // Recurse into the next level — batch if multiple entities of same type,
+            // fall through to single-entity path for already-visited nodes (skipped
+            // inside LoadEntityGraphBatchAsync via the visited set).
+            if (nextLevelEntities.Count > 0)
+            {
+                var groups = nextLevelEntities
+                    .GroupBy(e => e.GetType())
+                    .ToList();
+
+                foreach (var group in groups)
+                {
+                    var groupList = group.ToList();
+                    var relatedTable = DbInfoCache.FindTable(group.Key);
+                    if (relatedTable is null) continue;
+
+                    var relIncludes = relatedTable.Relationships
+                        .Where(r => r.Name is not null)
+                        .Select(r => r.Name!)
+                        .ToList();
+
+                    if (relIncludes.Count > 0)
+                        await LoadEntityGraphBatchAsync(groupList, relIncludes, visited);
+                }
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()

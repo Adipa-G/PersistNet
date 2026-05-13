@@ -476,4 +476,55 @@ public class ChangeSetBuilderTests
         // No-op UPDATE must be suppressed.
         Assert.Empty(builder.PendingOperations.Where(o => o.TableName == "customers"));
     }
+
+    // ── Version column (optimistic concurrency) ───────────────────────────────
+
+    [TableInfo(TableName = "ver_widgets")]
+    private class VerWidget
+    {
+        [ColumnInfo(Key = true)]       public int    Id      { get; set; }
+        [ColumnInfo]                   public string Name    { get; set; } = "";
+        [ColumnInfo(IsVersion = true)] public long   Version { get; set; }
+    }
+
+    [Fact]
+    public void Given_EntityWithVersionColumn_When_Save_Then_VersionCellFlaggedAsVersion()
+    {
+        var builder = new ChangeSetBuilder();
+        builder.Save(new VerWidget { Id = 1, Name = "Bolt", Version = 3L });
+
+        var op = builder.PendingOperations.Single(o => o.TableName == "ver_widgets");
+        Assert.Equal(OperationType.Update, op.Type);
+
+        // The version cell must carry IsVersion = true so StatementOptimizer
+        // routes it into the WHERE clause and increments it in the SET clause.
+        var versionCell = Assert.Single(op.Row.Cells, c =>
+            string.Equals(c.ColumnName, "Version", StringComparison.OrdinalIgnoreCase));
+        Assert.True(versionCell.IsVersion);
+        Assert.Equal(3L, versionCell.Value); // stores the *expected* (current) value
+    }
+
+    [Fact]
+    public void Given_EntityWithVersionColumn_AfterSnapshot_When_NameUnchanged_Then_VersionStillIncluded()
+    {
+        // The version column must always be present in the UPDATE even when its
+        // value hasn't changed — it must never be filtered out by dirty tracking,
+        // because it drives the optimistic concurrency WHERE clause.
+        var builder = new ChangeSetBuilder();
+        var entity = new VerWidget { Id = 1, Name = "Bolt", Version = 5L };
+
+        builder.TrackSnapshot(entity);
+        // Name didn't change — only the save triggers the UPDATE.
+        entity.Name = "Bolt-v2"; // change something so there's a diff to write
+        builder.Save(entity);
+
+        var op = builder.PendingOperations.Single(o => o.TableName == "ver_widgets");
+        Assert.Equal(OperationType.Update, op.Type);
+
+        // Version cell must be present and flagged.
+        var versionCell = Assert.Single(op.Row.Cells, c =>
+            string.Equals(c.ColumnName, "Version", StringComparison.OrdinalIgnoreCase));
+        Assert.True(versionCell.IsVersion);
+        Assert.Equal(5L, versionCell.Value);
+    }
 }

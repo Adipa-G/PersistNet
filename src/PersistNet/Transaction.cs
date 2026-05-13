@@ -180,7 +180,9 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
         var table = DbInfoCache.FindTable(entityType);
         if (table is null) return;
 
-        // Mark each entity visited so we don't re-enter during recursion.
+        // Filter to only entities not yet visited — mirrors the per-entity early-return
+        // in LoadEntityGraphAsync and is what breaks cycles in the batch path.
+        var unvisited = new List<object>(entities.Count);
         foreach (var entity in entities)
         {
             var keyTable = table.BaseTable ?? table;
@@ -188,19 +190,21 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
                 .Where(c => c.IsKey)
                 .OrderBy(c => c.KeyOrder)
                 .Select(c => c.Getter(entity)?.ToString() ?? "null"));
-            visited.Add($"{entityType.FullName}:{pkStr}");
+            if (visited.Add($"{entityType.FullName}:{pkStr}"))
+                unvisited.Add(entity);
         }
+        if (unvisited.Count == 0) return;
 
         foreach (var propName in includes)
         {
             var rel = table.Relationships.FirstOrDefault(r => r.Name == propName);
             if (rel is null) continue;
 
-            var batchResult = await _persistence.LoadNavigationBatchAsync(entities, table, rel, default);
+            var batchResult = await _persistence.LoadNavigationBatchAsync(unvisited, table, rel, default);
 
             var nextLevelEntities = new List<object>();
 
-            foreach (var entity in entities)
+            foreach (var entity in unvisited)
             {
                 var lookupKey = batchResult.EntityKeySelector(entity);
                 if (lookupKey is null) continue;

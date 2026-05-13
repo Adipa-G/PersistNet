@@ -375,4 +375,37 @@ public class TransactionIntegrationTests : IAsyncDisposable
         // Version must still be 5 — no UPDATE was issued.
         Assert.Equal(5L, await GetVerItemVersionAsync(1));
     }
+
+    // ── DeleteAndCommitAsync ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DeleteAndCommitAsync_RemovesRow()
+    {
+        await CreateProductsTable();
+        await InsertProductDirectly(1, "ToDelete", 0);
+
+        await using var txn = await _factory.OpenTransactionAsync();
+        await txn.DeleteAndCommitAsync(new TxnProduct { Id = 1 });
+
+        Assert.Equal(0, await CountAsync());
+    }
+
+    // ── DisposeAsync after commit ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task CommitAsync_ThenDisposeAsync_DoesNotRollback()
+    {
+        await CreateProductsTable();
+
+        // Commit a write, then dispose — the dispose must NOT issue a rollback.
+        var txn = await _factory.OpenTransactionAsync();
+        txn.Save(new TxnProduct { Id = 0, Name = "Committed", Price = 1 });
+        await txn.CommitAsync();
+        await txn.DisposeAsync(); // should be a no-op
+
+        // Row must still be in the DB.
+        Assert.Equal(1, await CountAsync());
+        Assert.Equal("Committed",
+            await ScalarAsync("SELECT Name FROM txn_products WHERE Id = 0"));
+    }
 }

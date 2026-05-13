@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
 using PersistNet.DbAbstraction;
@@ -299,5 +301,81 @@ public class SqlitePersistenceTests : IAsyncDisposable
         await _persistence.ExecuteAsync(op);
 
         Assert.Equal(1, await CountAsync("pst_products"));
+    }
+
+    // ── Chunking (MaxParameterBatchSize) ─────────────────────────────────────
+
+    /// <summary>
+    /// Concrete subclass with a very small MaxParameterBatchSize so that even
+    /// a handful of rows forces the chunking code path in ExecuteUpdateAsync /
+    /// ExecuteDeleteAsync without needing tens-of-thousands of rows.
+    /// <para>
+    /// With MaxParameterBatchSize = 5:
+    ///   UPDATE (1 SET col, 1 key col): sharedParams=1, paramsPerRow=1,
+    ///   maxRowsPerBatch = (5-1)/1 = 4  →  10 rows needs 3 chunks.
+    ///   DELETE (1 key col): paramsPerRow=1, maxRowsPerBatch=5/1=5
+    ///   →  10 rows needs 2 chunks.
+    /// </para>
+    /// </summary>
+    private sealed class TinyBatchPersistence : AnsiSqlPersistenceBase
+    {
+        internal TinyBatchPersistence(System.Data.Common.DbConnection conn) : base(conn) { }
+        protected override int MaxParameterBatchSize => 5;
+    }
+
+    [Fact]
+    public async Task Given_UpdateExceedsMaxParameterBatchSize_Then_AllRowsAreUpdated()
+    {
+        await CreateProductsTable();
+
+        // Seed 10 rows.
+        var insertAll = new MultiRowInsert("pst_products", null,
+            new[] { "Id", "Name", "Price" },
+            Enumerable.Range(1, 10)
+                .Select(i => (IReadOnlyList<object?>)new object?[] { i, $"Old{i}", i * 10 })
+                .ToList());
+        await _persistence.ExecuteInsertAsync(insertAll);
+
+        // UPDATE all 10 via a tiny-batch persistence (maxRowsPerBatch = 4 → 3 chunks).
+        var tiny = new TinyBatchPersistence(_connection);
+        var update = new GroupedUpdate("pst_products", null,
+            new[] { new SetClause("Name", "NewName") },
+            new[] { "Id" },
+            Enumerable.Range(1, 10)
+                .Select(i => (IReadOnlyList<object?>)new object?[] { i })
+                .ToList());
+
+        await tiny.ExecuteUpdateAsync(update);
+
+        // Every row must carry the new name.
+        for (var i = 1; i <= 10; i++)
+            Assert.Equal("NewName",
+                await ScalarAsync($"SELECT Name FROM pst_products WHERE Id = {i}"));
+    }
+
+    [Fact]
+    public async Task Given_DeleteExceedsMaxParameterBatchSize_Then_AllRowsAreDeleted()
+    {
+        await CreateProductsTable();
+
+        // Seed 10 rows.
+        var insertAll = new MultiRowInsert("pst_products", null,
+            new[] { "Id", "Name", "Price" },
+            Enumerable.Range(1, 10)
+                .Select(i => (IReadOnlyList<object?>)new object?[] { i, $"Item{i}", 0 })
+                .ToList());
+        await _persistence.ExecuteInsertAsync(insertAll);
+
+        // DELETE all 10 via a tiny-batch persistence (maxRowsPerBatch = 5 → 2 chunks).
+        var tiny = new TinyBatchPersistence(_connection);
+        var delete = new BatchDelete("pst_products", null,
+            new[] { "Id" },
+            Enumerable.Range(1, 10)
+                .Select(i => (IReadOnlyList<object?>)new object?[] { i })
+                .ToList());
+
+        await tiny.ExecuteDeleteAsync(delete);
+
+        Assert.Equal(0, await CountAsync("pst_products"));
     }
 }

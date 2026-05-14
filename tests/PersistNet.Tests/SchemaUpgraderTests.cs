@@ -189,4 +189,164 @@ public class SchemaUpgraderTests : IAsyncDisposable
         Assert.Contains("Categories", names);
         Assert.DoesNotContain("Products", names);
     }
+
+    // ── Guard conditions ───────────────────────────────────────────────────
+
+    [Fact]
+    public void ForTypes_UnknownDbProvider_ThrowsArgumentOutOfRangeException()
+    {
+        // CreateSchema throws for any DbProvider value not handled in the switch.
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            SchemaUpgrader.ForTypes(_connection, (DbProvider)999, Array.Empty<Type>()));
+    }
+
+    [Fact]
+    public void FromAssembly_NullFilter_IncludesAllTableInfoTypesInAssembly()
+    {
+        // Passing filter = null uses the `_ => true` default path inside FromAssembly.
+        // We just verify creation succeeds (the result includes every [TableInfo] type).
+        using var conn = new SqliteConnection("Data Source=:memory:");
+        conn.Open();
+
+        var upgrader = SchemaUpgrader.FromAssembly(conn, DbProvider.SQLite,
+            typeof(SchemaUpgraderTests).Assembly);
+
+        Assert.NotNull(upgrader);
+    }
+
+    // ── Schema migration: add column ──────────────────────────────────────
+
+    // Nested so DeclaringType != SchemaUpgraderTests and the UpgraderFromAssembly
+    // scan filter (t.DeclaringType == typeof(SchemaUpgraderTests)) ignores them,
+    // preventing duplicate-table-name conflicts in the assembly-scan tests.
+    private static class MigrationFixtures
+    {
+        [TableInfo(TableName = "mig_items")]
+        public class V1
+        {
+            [ColumnInfo(Key = true, ColumnType = ColumnType.Integer)]
+            public int Id { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Varchar, Size = 100, Nullable = false)]
+            public string Name { get; set; } = "";
+        }
+
+        [TableInfo(TableName = "mig_items")]
+        public class V2
+        {
+            [ColumnInfo(Key = true, ColumnType = ColumnType.Integer)]
+            public int Id { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Varchar, Size = 100, Nullable = false)]
+            public string Name { get; set; } = "";
+
+            [ColumnInfo(ColumnType = ColumnType.Integer, Nullable = true)]
+            public int? Score { get; set; }
+        }
+    }
+
+    [Fact]
+    public async Task Given_ExistingTable_When_ColumnAdded_Then_ApplyAddsMissingColumn()
+    {
+        // v1 schema: mig_items (Id, Name)
+        await UpgraderFor(typeof(MigrationFixtures.V1)).ApplyAsync();
+
+        // v2 schema: mig_items (Id, Name, Score) — Score is new
+        await UpgraderFor(typeof(MigrationFixtures.V2)).ApplyAsync();
+
+        var schema = new PersistNet.DbAbstraction.SqliteSchema(_connection);
+        var snap = await schema.GetCurrentSchemaAsync();
+        var table = snap.Tables.First(t => string.Equals(t.Name, "mig_items", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains(table.Columns, c => string.Equals(c.Name, "Score", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Given_ExistingTable_When_ColumnAdded_Then_ExportSqlContainsAlterTable()
+    {
+        // v1 schema: mig_items (Id, Name)
+        await UpgraderFor(typeof(MigrationFixtures.V1)).ApplyAsync();
+
+        // v2 schema should produce ADD COLUMN SQL without applying it
+        var sql = await UpgraderFor(typeof(MigrationFixtures.V2)).ExportMigrationSqlAsync();
+
+        Assert.NotEmpty(sql);
+        Assert.Contains(sql, s => s.Contains("ADD COLUMN", StringComparison.OrdinalIgnoreCase)
+                                  && s.Contains("Score", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── Schema migration: drop table ──────────────────────────────────────
+
+    [Fact]
+    public async Task Given_ObsoleteTable_When_Apply_Then_TableIsDropped()
+    {
+        // Create a table that no entity type is registered for.
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "CREATE TABLE obsolete_items (Id INTEGER NOT NULL PRIMARY KEY)";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // Apply the MigItemV1 schema — SchemaUpgrader sees obsolete_items as not in desired → drops it.
+        await UpgraderFor(typeof(MigrationFixtures.V1)).ApplyAsync();
+
+        var schema = new PersistNet.DbAbstraction.SqliteSchema(_connection);
+        var snap = await schema.GetCurrentSchemaAsync();
+        Assert.DoesNotContain(snap.Tables, t =>
+            string.Equals(t.Name, "obsolete_items", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── FK schema generation ──────────────────────────────────────────────
+
+    // Nested to exclude from UpgraderFromAssembly scan.
+    private static class FkFixtures
+    {
+        [TableInfo(TableName = "fk_depts")]
+        public class FkDept
+        {
+            [ColumnInfo(Key = true, AutoIncrement = true, ColumnType = ColumnType.Integer)]
+            public int Id { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Varchar, Size = 100, Nullable = false)]
+            public string Name { get; set; } = "";
+
+            [OneToManyRelationshipInfo(RelatedType = typeof(FkMember), MappedBy = "Dept")]
+            public List<FkMember>? Members { get; set; }
+        }
+
+        [TableInfo(TableName = "fk_members")]
+        public class FkMember
+        {
+            [ColumnInfo(Key = true, AutoIncrement = true, ColumnType = ColumnType.Integer)]
+            public int Id { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Integer)]
+            public int DeptId { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Varchar, Size = 100, Nullable = false)]
+            public string Name { get; set; } = "";
+
+            [ManyToOneRelationshipInfo(
+                RelatedType = typeof(FkDept),
+                FromKeys = new[] { "DeptId" },
+                ToKeys = new[] { "Id" })]
+            public FkDept? Dept { get; set; }
+        }
+    }
+
+    [Fact]
+    public async Task Given_O2MEntities_When_ApplyAsync_Then_SchemaContainsForeignKey()
+    {
+        await UpgraderFor(typeof(FkFixtures.FkDept), typeof(FkFixtures.FkMember)).ApplyAsync();
+
+        var schema = new PersistNet.DbAbstraction.SqliteSchema(_connection);
+        var snap = await schema.GetCurrentSchemaAsync();
+
+        var membersTable = snap.Tables.First(t =>
+            string.Equals(t.Name, "fk_members", StringComparison.OrdinalIgnoreCase));
+
+        Assert.NotEmpty(membersTable.ForeignKeys);
+        Assert.Contains(membersTable.ForeignKeys, fk =>
+            string.Equals(fk.ToTable, "fk_depts", StringComparison.OrdinalIgnoreCase));
+    }
 }

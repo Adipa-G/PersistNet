@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace PersistNet.Tests.Scenarios;
@@ -38,7 +39,7 @@ public sealed class OneToManyScenarioTests : ScenarioTestBase
         [ColumnInfo(Key = true, AutoIncrement = true)]
         public int Id { get; set; }
 
-        [ColumnInfo]
+        [ColumnInfo(ColumnType = ColumnType.Integer)]
         public int DeptId { get; set; }
 
         [ColumnInfo]
@@ -53,15 +54,8 @@ public sealed class OneToManyScenarioTests : ScenarioTestBase
 
     // ── DDL ─────────────────────────────────────────────────────────────────
 
-    private async Task CreateTablesAsync()
-    {
-        await ExecAsync(
-            "CREATE TABLE sc_o2m_depts " +
-            "(Id INTEGER NOT NULL PRIMARY KEY, Name TEXT NOT NULL)");
-        await ExecAsync(
-            "CREATE TABLE sc_o2m_members " +
-            "(Id INTEGER NOT NULL PRIMARY KEY, DeptId INTEGER NOT NULL, Name TEXT NOT NULL)");
-    }
+    private Task CreateTablesAsync()
+        => CreateSchemaAsync(typeof(O2mDept), typeof(O2mMember));
 
     // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -167,5 +161,25 @@ public sealed class OneToManyScenarioTests : ScenarioTestBase
 
         Assert.Equal(0L, await CountAsync("sc_o2m_members"));
         Assert.Equal(0L, await CountAsync("sc_o2m_depts"));
+    }
+
+    // ── FK constraint enforcement ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Verifies that PRAGMA foreign_keys = ON is active and that inserting a member
+    /// with a DeptId that references no existing department raises a FK violation.
+    /// This proves both that schema generation emits FK constraints and that the
+    /// ScenarioTestBase pragma enables enforcement.
+    /// </summary>
+    [Fact]
+    public async Task Insert_MemberWithInvalidDeptId_ThrowsForeignKeyViolation()
+    {
+        await CreateTablesAsync(); // uses SchemaUpgrader — tables now carry FK constraints
+
+        await using var txn = await Factory.OpenTransactionAsync();
+        // DeptId = 999 references no row in sc_o2m_depts.
+        txn.Save(new O2mMember { DeptId = 999, Name = "Orphan" });
+
+        await Assert.ThrowsAsync<SqliteException>(() => txn.CommitAsync());
     }
 }

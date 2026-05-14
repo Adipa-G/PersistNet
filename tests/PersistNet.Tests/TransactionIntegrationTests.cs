@@ -389,7 +389,34 @@ public class TransactionIntegrationTests : IAsyncDisposable
 
         Assert.Equal(0, await CountAsync());
     }
+    // ── ConcurrencyException properties ──────────────────────────────────────
 
+    [Fact]
+    public async Task Save_VersionedEntity_StaleVersion_ExceptionHasCorrectProperties()
+    {
+        await CreateVerItemsTable();
+        await InsertVerItemDirectly(1, "Gamma", 3L); // DB has version 3
+
+        await using var txn = await _factory.OpenTransactionAsync();
+        txn.Save(new VerItem { Id = 1, Name = "Gamma-Updated", Version = 1L }); // stale
+
+        var ex = await Assert.ThrowsAsync<ConcurrencyException>(() => txn.CommitAsync());
+        Assert.Equal("ver_items", ex.TableName);
+        Assert.Equal(1, ex.ExpectedRows);
+        Assert.Equal(0, ex.ActualRows);
+    }
+
+    // ── GetAsync Include with invalid expression ──────────────────────────────
+
+    [Fact]
+    public async Task GetAsync_Include_NonPropertyExpression_ThrowsArgumentException()
+    {
+        // Include() resolves the property name eagerly (synchronously); a method-call
+        // expression such as p => p.GetHashCode() must throw ArgumentException.
+        await using var txn = await _factory.OpenTransactionAsync();
+        Assert.Throws<ArgumentException>(() =>
+            txn.GetAsync<TxnProduct>(1).Include(p => p.GetHashCode()));
+    }
     // ── DisposeAsync after commit ─────────────────────────────────────────────
 
     [Fact]

@@ -24,7 +24,7 @@ public sealed class ManyToManyScenarioTests : ScenarioTestBase
     [TableInfo(TableName = "sc_m2m_actors")]
     private class M2mActor
     {
-        [ColumnInfo(Key = true)]
+        [ColumnInfo(Key = true, ColumnType = ColumnType.Integer)]
         public int Id { get; set; }
 
         [ColumnInfo]
@@ -43,7 +43,7 @@ public sealed class ManyToManyScenarioTests : ScenarioTestBase
     [TableInfo(TableName = "sc_m2m_movies")]
     private class M2mMovie
     {
-        [ColumnInfo(Key = true)]
+        [ColumnInfo(Key = true, ColumnType = ColumnType.Integer)]
         public int Id { get; set; }
 
         [ColumnInfo]
@@ -55,16 +55,8 @@ public sealed class ManyToManyScenarioTests : ScenarioTestBase
 
     // ── DDL ─────────────────────────────────────────────────────────────────
 
-    private async Task CreateTablesAsync()
-    {
-        await ExecAsync(
-            "CREATE TABLE sc_m2m_actors (Id INTEGER NOT NULL PRIMARY KEY, Name TEXT NOT NULL)");
-        await ExecAsync(
-            "CREATE TABLE sc_m2m_movies (Id INTEGER NOT NULL PRIMARY KEY, Title TEXT NOT NULL)");
-        await ExecAsync(
-            "CREATE TABLE sc_m2m_castings " +
-            "(ActorId INTEGER NOT NULL, MovieId INTEGER NOT NULL, PRIMARY KEY (ActorId, MovieId))");
-    }
+    private Task CreateTablesAsync()
+        => CreateSchemaAsync(typeof(M2mActor), typeof(M2mMovie));
 
     // ── Tests ────────────────────────────────────────────────────────────────
 

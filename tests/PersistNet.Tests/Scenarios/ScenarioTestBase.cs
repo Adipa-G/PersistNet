@@ -19,10 +19,26 @@ public abstract class ScenarioTestBase : IAsyncDisposable
     {
         Connection = new SqliteConnection("Data Source=:memory:");
         Connection.Open();
+
+        // Enable FK constraint enforcement (SQLite disables it by default).
+        using (var pragma = Connection.CreateCommand())
+        {
+            pragma.CommandText = "PRAGMA foreign_keys = ON";
+            pragma.ExecuteNonQuery();
+        }
+
         Factory = new TransactionFactory(
             Connection, DbProvider.SQLite,
             NullLogger<TransactionFactory>.Instance);
     }
+
+    /// <summary>
+    /// Creates schema for the given entity types using <see cref="SchemaUpgrader"/>.
+    /// Tables are generated with proper column definitions and FK constraints derived
+    /// from the entity relationship attributes.
+    /// </summary>
+    protected Task CreateSchemaAsync(params Type[] entityTypes)
+        => SchemaUpgrader.ForTypes(Connection, DbProvider.SQLite, entityTypes).ApplyAsync();
 
     /// <summary>Executes a DDL or DML statement with no result.</summary>
     protected async Task ExecAsync(string sql)

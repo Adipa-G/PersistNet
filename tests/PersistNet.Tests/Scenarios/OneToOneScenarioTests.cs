@@ -33,12 +33,13 @@ public sealed class OneToOneScenarioTests : ScenarioTestBase
     }
 
     [TableInfo(TableName = "sc_oto_profiles")]
+    [IndexInfo(Columns = new[] { "EmployeeId" }, Unique = true)]
     private class OtoProfile
     {
         [ColumnInfo(Key = true, AutoIncrement = true)]
         public int Id { get; set; }
 
-        [ColumnInfo]
+        [ColumnInfo(ColumnType = ColumnType.Integer)]
         public int EmployeeId { get; set; }
 
         [ColumnInfo]
@@ -54,15 +55,8 @@ public sealed class OneToOneScenarioTests : ScenarioTestBase
 
     // ── DDL ─────────────────────────────────────────────────────────────────
 
-    private async Task CreateTablesAsync()
-    {
-        await ExecAsync(
-            "CREATE TABLE sc_oto_employees " +
-            "(Id INTEGER NOT NULL PRIMARY KEY, Name TEXT NOT NULL)");
-        await ExecAsync(
-            "CREATE TABLE sc_oto_profiles " +
-            "(Id INTEGER NOT NULL PRIMARY KEY, EmployeeId INTEGER NOT NULL UNIQUE, Bio TEXT NOT NULL)");
-    }
+    private Task CreateTablesAsync()
+        => CreateSchemaAsync(typeof(OtoEmployee), typeof(OtoProfile));
 
     // ── Tests ────────────────────────────────────────────────────────────────
 

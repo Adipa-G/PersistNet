@@ -57,7 +57,10 @@ internal static class DbInfoSchemaConverter
             : null;
 
         var indexes = table.Indexes
-            .Select(i => new SchemaIndex(i.Name, i.Columns, i.Unique))
+            .Select(i => new SchemaIndex(
+                i.Name ?? $"idx_{table.Name}_{string.Join("_", i.Columns)}",
+                i.Columns,
+                i.Unique))
             .ToList();
 
         var foreignKeys = BuildForeignKeys(table, tableByType);

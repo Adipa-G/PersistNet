@@ -243,6 +243,29 @@ public class SchemaUpgraderTests : IAsyncDisposable
             [ColumnInfo(ColumnType = ColumnType.Integer, Nullable = true)]
             public int? Score { get; set; }
         }
+
+        // V3: same table, but Name widened to VARCHAR(200) — triggers AlterColumn
+        [TableInfo(TableName = "mig_items")]
+        public class V3
+        {
+            [ColumnInfo(Key = true, ColumnType = ColumnType.Integer)]
+            public int Id { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Varchar, Size = 200, Nullable = false)]
+            public string Name { get; set; } = "";
+        }
+
+        // WithIndex: same table as V1 but adds a named index on Name
+        [TableInfo(TableName = "mig_items")]
+        [IndexInfo(Name = "idx_mig_items_name", Columns = new[] { "Name" })]
+        public class WithIndex
+        {
+            [ColumnInfo(Key = true, ColumnType = ColumnType.Integer)]
+            public int Id { get; set; }
+
+            [ColumnInfo(ColumnType = ColumnType.Varchar, Size = 100, Nullable = false)]
+            public string Name { get; set; } = "";
+        }
     }
 
     [Fact]
@@ -294,6 +317,65 @@ public class SchemaUpgraderTests : IAsyncDisposable
         var snap = await schema.GetCurrentSchemaAsync();
         Assert.DoesNotContain(snap.Tables, t =>
             string.Equals(t.Name, "obsolete_items", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── Schema migration: alter column ────────────────────────────────────
+
+    [Fact]
+    public async Task Given_ExistingTable_When_ColumnSizeChanged_Then_ApplyAltersColumn()
+    {
+        // Apply V1: Name VARCHAR(100)
+        await UpgraderFor(typeof(MigrationFixtures.V1)).ApplyAsync();
+
+        // Apply V3: Name VARCHAR(200) — SchemaDiffer detects size mismatch → AlterColumn
+        await UpgraderFor(typeof(MigrationFixtures.V3)).ApplyAsync();
+
+        var schema = new PersistNet.DbAbstraction.SqliteSchema(_connection);
+        var snap = await schema.GetCurrentSchemaAsync();
+        var table = snap.Tables.First(t => string.Equals(t.Name, "mig_items", StringComparison.OrdinalIgnoreCase));
+        var nameCol = table.Columns.First(c => string.Equals(c.Name, "Name", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal(200, nameCol.Size);
+    }
+
+    // ── Schema migration: drop column ─────────────────────────────────────
+
+    [Fact]
+    public async Task Given_ExistingTable_When_ColumnRemoved_Then_ApplyDropsColumn()
+    {
+        // Apply V2: mig_items (Id, Name, Score)
+        await UpgraderFor(typeof(MigrationFixtures.V2)).ApplyAsync();
+
+        // Apply V1: mig_items (Id, Name) — SchemaDiffer detects Score is extra → DropColumn
+        await UpgraderFor(typeof(MigrationFixtures.V1)).ApplyAsync();
+
+        var schema = new PersistNet.DbAbstraction.SqliteSchema(_connection);
+        var snap = await schema.GetCurrentSchemaAsync();
+        var table = snap.Tables.First(t => string.Equals(t.Name, "mig_items", StringComparison.OrdinalIgnoreCase));
+
+        Assert.DoesNotContain(table.Columns, c => string.Equals(c.Name, "Score", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── Schema migration: drop index ──────────────────────────────────────
+
+    [Fact]
+    public async Task Given_ExistingTable_When_IndexRemoved_Then_ApplyDropsIndex()
+    {
+        // Apply WithIndex: mig_items + idx_mig_items_name
+        await UpgraderFor(typeof(MigrationFixtures.WithIndex)).ApplyAsync();
+
+        // Verify the index was created
+        var schema = new PersistNet.DbAbstraction.SqliteSchema(_connection);
+        var snapBefore = await schema.GetCurrentSchemaAsync();
+        var tableBefore = snapBefore.Tables.First(t => string.Equals(t.Name, "mig_items", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(tableBefore.Indexes, i => string.Equals(i.Name, "idx_mig_items_name", StringComparison.OrdinalIgnoreCase));
+
+        // Apply V1: same table but no IndexInfo — SchemaDiffer sees idx_mig_items_name in actual but not desired → DropIndex
+        await UpgraderFor(typeof(MigrationFixtures.V1)).ApplyAsync();
+
+        var snapAfter = await schema.GetCurrentSchemaAsync();
+        var tableAfter = snapAfter.Tables.First(t => string.Equals(t.Name, "mig_items", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(tableAfter.Indexes, i => string.Equals(i.Name, "idx_mig_items_name", StringComparison.OrdinalIgnoreCase));
     }
 
     // ── FK schema generation ──────────────────────────────────────────────

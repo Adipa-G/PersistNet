@@ -195,7 +195,11 @@ internal abstract class AnsiSqlSchemaBase : IDbSchema
         var sql = new List<string>();
 
         foreach (var table in diff.TablesToCreate)
+        {
             sql.Add(BuildCreateTableSql(table));
+            foreach (var index in table.Indexes)
+                sql.Add(BuildCreateIndexSql(table.Name, table.Schema, index));
+        }
 
         foreach (var (tableName, tableSchema, col) in diff.ColumnsToAdd)
             sql.Add(BuildAddColumnSql(tableName, tableSchema, col));

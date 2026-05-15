@@ -96,7 +96,11 @@ public sealed class SchemaUpgrader
         if (diff.IsEmpty) return;
 
         foreach (var table in diff.TablesToCreate)
+        {
             await _schema.CreateTableAsync(table, ct);
+            foreach (var index in table.Indexes)
+                await _schema.CreateIndexAsync(table.Name, table.Schema, index, ct);
+        }
 
         foreach (var (tableName, tableSchema, col) in diff.ColumnsToAdd)
             await _schema.AddColumnAsync(tableName, tableSchema, col, ct);

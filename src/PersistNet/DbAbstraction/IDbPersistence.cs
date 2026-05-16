@@ -51,4 +51,43 @@ internal interface IDbPersistence
     /// <c>MaxParameterBatchSize</c>.
     /// </summary>
     Task<BatchNavResult> LoadNavigationBatchAsync(IReadOnlyList<object> entities, Table entityTable, Relationship relationship, CancellationToken ct = default);
+
+    /// <summary>
+    /// Executes a raw SQL query and materializes each row into a new instance of
+    /// <typeparamref name="T"/>. Only properties decorated with <see cref="ColumnInfo"/>
+    /// are mapped; extra result-set columns are silently ignored.
+    /// </summary>
+    Task<IReadOnlyList<T>> ExecuteQueryAsync<T>(
+        string sql,
+        List<(string Name, object? Value)> parameters,
+        CancellationToken ct = default) where T : class, new();
+
+    /// <summary>
+    /// Executes a scalar query (e.g. <c>SELECT COUNT(*)</c>) and converts the
+    /// result to <typeparamref name="TResult"/>.
+    /// </summary>
+    Task<TResult> ExecuteScalarAsync<TResult>(
+        string sql,
+        List<(string Name, object? Value)> parameters,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Executes a scalar query and returns <c>null</c> when the DB value is
+    /// <c>NULL</c> (e.g. <c>SELECT MAX(col)</c> on an empty table).
+    /// </summary>
+    Task<TResult?> ExecuteScalarNullableAsync<TResult>(
+        string sql,
+        List<(string Name, object? Value)> parameters,
+        CancellationToken ct = default) where TResult : struct;
+
+    /// <summary>
+    /// Quotes a single SQL identifier using the provider-specific delimiter
+    /// (ANSI double-quotes by default; SQL Server uses square brackets).
+    /// </summary>
+    string Quote(string identifier);
+
+    /// <summary>
+    /// Appends provider-specific LIMIT / OFFSET clauses to <paramref name="sql"/>.
+    /// </summary>
+    string AppendLimitOffset(string sql, int? skip, int? take);
 }

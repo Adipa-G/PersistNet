@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using PersistNet.DbAbstraction;
 using PersistNet.DbInfo;
 using PersistNet.Entities;
 using PersistNet.Entities.VirtualDb;
+using PersistNet.Query;
 
 namespace PersistNet;
 
@@ -89,6 +91,22 @@ public sealed class Transaction : ITransaction, IAsyncDisposable
 
     public IEntityQuery<T> GetAsync<T>(params object[] keyValues) where T : class
         => new EntityQuery<T>(this, keyValues);
+
+    public ISelectQuery<T> Query<T>() where T : class, new()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return new Query.SelectQuery<T>(_persistence);
+    }
+
+    public Task<IReadOnlyList<T>> QueryAsync<T>(
+        string sql,
+        object? parameters = null,
+        CancellationToken ct = default) where T : class, new()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var paramList = Mapping.DtoMapper.ExtractParameters(parameters);
+        return _persistence.ExecuteQueryAsync<T>(sql, paramList, ct);
+    }
 
     internal async Task<T> LoadEntityCoreAsync<T>(object[] keyValues) where T : class
     {

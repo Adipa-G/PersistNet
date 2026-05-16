@@ -360,7 +360,7 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
         return (T)MaterializeEntity(reader, typeof(T), selectColumns);
     }
 
-    // ── Type coercion helper ─────────────────────────────────────────────────
+    // ── Joined-subtype SELECT ────────────────────────────────────────────────
 
     /// <summary>
     /// Executes a JOIN SELECT for a joined-subtype entity: base-table columns aliased as
@@ -457,7 +457,7 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
                 string.Equals(c.ColumnName, colName, StringComparison.OrdinalIgnoreCase));
             if (col is null) continue;
             var rawValue = reader.IsDBNull(i) ? null : reader.GetValue(i);
-            col.Property.SetValue(instance, ConvertValue(rawValue, col.Property.PropertyType));
+            col.Property.SetValue(instance, ValueConverter.Convert(rawValue, col.Property.PropertyType));
         }
         return instance;
     }
@@ -812,16 +812,68 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
         }
     }
 
-    /// <summary>
-    /// Coerces a value read from <see cref="DbDataReader"/> to the CLR property type.
-    /// Handles the common case where SQLite returns <c>long</c> for integer columns,
-    /// <c>double</c> for decimal columns, etc.
-    /// </summary>
-    private static object? ConvertValue(object? dbValue, Type targetType)
+    // ── DTO / raw-query materializer ─────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<T>> ExecuteQueryAsync<T>(
+        string sql,
+        List<(string Name, object? Value)> parameters,
+        CancellationToken ct = default) where T : class, new()
     {
-        if (dbValue is null) return null;
-        var underlying = Nullable.GetUnderlyingType(targetType) ?? targetType;
-        if (underlying.IsAssignableFrom(dbValue.GetType())) return dbValue;
-        return Convert.ChangeType(dbValue, underlying);
+        _logger?.LogDebug("Executing DTO query: {Sql} | Params: {Params}", sql, FormatParams(parameters));
+
+        using var cmd = CreateCommand();
+        cmd.CommandText = sql;
+        BindParameters(cmd, parameters);
+
+        using var reader = await cmd.ExecuteReaderAsync(ct);
+        var results = new List<T>();
+        while (await reader.ReadAsync(ct))
+            results.Add(Mapping.DtoMapper.Materialize<T>(reader));
+        return results;
+    }
+
+    public async Task<TResult> ExecuteScalarAsync<TResult>(
+        string sql,
+        List<(string Name, object? Value)> parameters,
+        CancellationToken ct = default)
+    {
+        _logger?.LogDebug("Executing scalar query: {Sql} | Params: {Params}", sql, FormatParams(parameters));
+
+        using var cmd = CreateCommand();
+        cmd.CommandText = sql;
+        BindParameters(cmd, parameters);
+
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        if (raw is null or DBNull) return default!;
+        return (TResult)System.Convert.ChangeType(raw, typeof(TResult));
+    }
+
+    public async Task<TResult?> ExecuteScalarNullableAsync<TResult>(
+        string sql,
+        List<(string Name, object? Value)> parameters,
+        CancellationToken ct = default) where TResult : struct
+    {
+        _logger?.LogDebug("Executing scalar query: {Sql} | Params: {Params}", sql, FormatParams(parameters));
+
+        using var cmd = CreateCommand();
+        cmd.CommandText = sql;
+        BindParameters(cmd, parameters);
+
+        var raw = await cmd.ExecuteScalarAsync(ct);
+        if (raw is null or DBNull) return null;
+        return (TResult)System.Convert.ChangeType(raw, typeof(TResult));
+    }
+
+    public string Quote(string identifier) => QuoteIdentifier(identifier);
+
+    public virtual string AppendLimitOffset(string sql, int? skip, int? take)
+    {
+        if (take.HasValue && skip.HasValue)
+            return sql + $" LIMIT {take.Value} OFFSET {skip.Value}";
+        if (take.HasValue)
+            return sql + $" LIMIT {take.Value}";
+        if (skip.HasValue)
+            return sql + $" LIMIT -1 OFFSET {skip.Value}"; // SQLite: -1 = no upper bound
+        return sql;
     }
 }

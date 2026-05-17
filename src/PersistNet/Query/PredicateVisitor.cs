@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,7 +10,8 @@ namespace PersistNet.Query;
 
 /// <summary>
 /// Walks a C# expression tree and emits parameterized SQL fragments.
-/// Supports the common operators used in <c>.Where(p => ...)</c> lambda predicates.
+/// Supports the common operators used in <c>.Where(p => ...)</c> lambda predicates,
+/// including two-parameter JOIN conditions such as <c>(t, j) => t.FK == j.Id</c>.
 /// </summary>
 /// <remarks>
 /// Unsupported expressions throw <see cref="NotSupportedException"/> with a hint to
@@ -18,23 +19,31 @@ namespace PersistNet.Query;
 /// </remarks>
 internal sealed class PredicateVisitor
 {
-    private readonly Table                         _table;
+    private readonly CompileContext                ctx;
     private readonly Func<string, string>          _quote;
-    private readonly List<(string Name, object? Value)> _parameters;
-    private readonly CompileContext                _ctx;
+    /// <summary>
+    /// Fallback primary table used when no alias map is present (single-table queries).
+    /// May be null when the alias map covers all referenced types (e.g. JOIN conditions).
+    /// </summary>
+    private readonly Table?                        _primaryTable;
 
+    /// <param name="ctx">Compile context (parameter list + optional alias map).</param>
+    /// <param name="quote">Provider quoting function.</param>
+    /// <param name="primaryTable">
+    /// Fallback table used in single-table mode when the alias map is empty.
+    /// Pass <c>null</c> only when the alias map covers all parameter types (JOIN conditions).
+    /// </param>
     internal PredicateVisitor(
-        Table table,
+        CompileContext       ctx,
         Func<string, string> quote,
-        CompileContext ctx)
+        Table?               primaryTable = null)
     {
-        _table      = table;
-        _quote      = quote;
-        _parameters = ctx.Parameters;
-        _ctx        = ctx;
+        this.ctx     = ctx;
+        _quote        = quote;
+        _primaryTable = primaryTable;
     }
 
-    // ── Entry point ───────────────────────────────────────────────────────
+    // â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     internal string Visit(Expression expr)
     {
@@ -53,11 +62,11 @@ internal sealed class PredicateVisitor
         };
     }
 
-    // ── Binary ────────────────────────────────────────────────────────────
+    // â”€â”€ Binary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private string VisitBinary(BinaryExpression b)
     {
-        // null comparisons: p.X == null → IS NULL  /  p.X != null → IS NOT NULL
+        // null comparisons: p.X == null â†’ IS NULL  /  p.X != null â†’ IS NOT NULL
         if (b.NodeType == ExpressionType.Equal && IsNullConst(b.Right))
             return $"{Visit(b.Left)} IS NULL";
         if (b.NodeType == ExpressionType.Equal && IsNullConst(b.Left))
@@ -89,7 +98,7 @@ internal sealed class PredicateVisitor
         return $"{Visit(b.Left)} {op} {Visit(b.Right)}";
     }
 
-    // ── Unary ─────────────────────────────────────────────────────────────
+    // â”€â”€ Unary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private string VisitUnary(UnaryExpression u)
     {
@@ -104,76 +113,90 @@ internal sealed class PredicateVisitor
             $"Unary operator '{u.NodeType}' is not supported in a lambda WHERE clause.");
     }
 
-    // ── Member ────────────────────────────────────────────────────────────
+    // â”€â”€ Member â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private string VisitMember(MemberExpression m)
     {
-        // Entity property access on the lambda parameter → column name
-        if (m.Expression is ParameterExpression)
+        // Entity property access on a lambda parameter â†’ column name (possibly aliased)
+        if (m.Expression is ParameterExpression paramExpr)
         {
             if (m.Member is not PropertyInfo pi)
                 throw new NotSupportedException($"Only property access is supported (got field '{m.Member.Name}').");
-            var col = _table.Columns.FirstOrDefault(c => c.Property == pi)
+
+            // Multi-table mode: look up the table and alias by the parameter's C# type.
+            // This handles both primary entity params (t0) and joined entity params (t1, t2, â€¦)
+            // in two-parameter JOIN condition lambdas and Where<TJoin> predicates.
+            if (ctx.AliasMap.TryGetValue(paramExpr.Type, out var entry))
+            {
+                var col = entry.Table.Columns.FirstOrDefault(c => c.Property == pi)
+                    ?? throw new InvalidOperationException(
+                        $"Property '{pi.Name}' on '{paramExpr.Type.Name}' was not found in " +
+                        $"table '{entry.Table.Name}'. Ensure it has a [ColumnInfo] attribute.");
+                return $"{entry.Alias}.{_quote(col.ColumnName)}";
+            }
+
+            // Single-table mode (no alias map): use the primary table directly.
+            var table = _primaryTable
                 ?? throw new InvalidOperationException(
-                    $"Property '{pi.Name}' on '{_table.EntityType.Name}' was not found in table '{_table.Name}'. " +
-                    "Ensure it has a [ColumnInfo] attribute.");
-            return _quote(col.ColumnName);
+                    $"Cannot resolve property '{pi.Name}' â€” no table context for type '{paramExpr.Type.Name}'.");
+            var colFallback = table.Columns.FirstOrDefault(c => c.Property == pi)
+                ?? throw new InvalidOperationException(
+                    $"Property '{pi.Name}' on '{table.EntityType.Name}' was not found in " +
+                    $"table '{table.Name}'. Ensure it has a [ColumnInfo] attribute.");
+            return _quote(colFallback.ColumnName);
         }
 
-        // Closure / local variable — evaluate at query-build time
+        // Closure / local variable â€” evaluate at query-build time
         return VisitConstant(EvaluateMember(m));
     }
 
-    // Hack: VisitMember uses the table's entity type for error messages
-    // (no generic type parameter on the class itself)
-
-    // ── Constant ─────────────────────────────────────────────────────────
+    // â”€â”€ Constant â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private string VisitConstant(object? value)
     {
-        var pName = _ctx.NextParam();
-        _ctx.Parameters.Add((pName, value));
+        var pName = ctx.NextParam();
+        ctx.Parameters.Add((pName, value));
         return pName;
     }
 
-    // ── Method calls ─────────────────────────────────────────────────────
+    // â”€â”€ Method calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private string VisitMethodCall(MethodCallExpression mc)
     {
-        // string.Contains(val) → col LIKE '%val%'
+        // string.Contains(val) â†’ col LIKE '%val%'
         if (mc.Method.DeclaringType == typeof(string) && mc.Method.Name == "Contains"
             && mc.Object is not null)
         {
             var colSql = Visit(mc.Object);
             var val    = EvaluateExpression(mc.Arguments[0])?.ToString() ?? "";
-            var pName  = _ctx.NextParam();
-            _ctx.Parameters.Add((pName, $"%{val}%"));
+            var pName  = ctx.NextParam();
+            ctx.Parameters.Add((pName, $"%{val}%"));
             return $"{colSql} LIKE {pName}";
         }
 
-        // string.StartsWith(val) → col LIKE 'val%'
+        // string.StartsWith(val) â†’ col LIKE 'val%'
         if (mc.Method.DeclaringType == typeof(string) && mc.Method.Name == "StartsWith"
             && mc.Object is not null)
         {
             var colSql = Visit(mc.Object);
             var val    = EvaluateExpression(mc.Arguments[0])?.ToString() ?? "";
-            var pName  = _ctx.NextParam();
-            _ctx.Parameters.Add((pName, $"{val}%"));
+            var pName  = ctx.NextParam();
+            ctx.Parameters.Add((pName, $"{val}%"));
             return $"{colSql} LIKE {pName}";
         }
 
-        // string.EndsWith(val) → col LIKE '%val'
+        // string.EndsWith(val) â†’ col LIKE '%val'
         if (mc.Method.DeclaringType == typeof(string) && mc.Method.Name == "EndsWith"
             && mc.Object is not null)
         {
             var colSql = Visit(mc.Object);
             var val    = EvaluateExpression(mc.Arguments[0])?.ToString() ?? "";
-            var pName  = _ctx.NextParam();
-            _ctx.Parameters.Add((pName, $"%{val}"));
+            var pName  = ctx.NextParam();
+            ctx.Parameters.Add((pName, $"%{val}"));
             return $"{colSql} LIKE {pName}";
         }
 
-        // list.Contains(p.Field) → col IN (@p0, @p1, ...)
+        // list.Contains(p.Field) â†’ col IN (@p0, @p1, ...)
         // or Enumerable.Contains(list, p.Field)
         if (mc.Method.Name == "Contains")
         {
@@ -206,13 +229,13 @@ internal sealed class PredicateVisitor
             var paramNames = new List<string>();
             foreach (var item in values)
             {
-                var pName = _ctx.NextParam();
-                _ctx.Parameters.Add((pName, item));
+                var pName = ctx.NextParam();
+                ctx.Parameters.Add((pName, item));
                 paramNames.Add(pName);
             }
 
             if (paramNames.Count == 0)
-                return "1=0"; // empty IN → always false
+                return "1=0"; // empty IN â†’ always false
 
             return $"{colSql} IN ({string.Join(", ", paramNames)})";
         }
@@ -222,7 +245,7 @@ internal sealed class PredicateVisitor
             "in a lambda WHERE clause. Use .Where(Expr.Field<T>(f => f.Property)...) instead.");
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
+    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static bool IsNullConst(Expression e)
         => e is ConstantExpression { Value: null }
@@ -249,3 +272,4 @@ internal sealed class PredicateVisitor
         }
     }
 }
+

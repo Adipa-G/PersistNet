@@ -37,6 +37,68 @@ public interface ISelectQuery<T> where T : class, new()
     /// </summary>
     ISelectQuery<T> Where(IConditionExpr condition);
 
+    /// <summary>
+    /// Adds a raw SQL WHERE fragment — an escape hatch for conditions the builder cannot
+    /// express.  Parameters use <c>@name</c> syntax and are supplied as an anonymous
+    /// object (<c>new { lo = 10, hi = 100 }</c>) or a <c>Dictionary&lt;string,object?&gt;</c>.
+    /// </summary>
+    ISelectQuery<T> Where(string rawSql, object? parameters = null);
+
+    /// <summary>
+    /// Adds a WHERE condition on a joined entity type.
+    /// Only valid after calling <see cref="InnerJoin{TJoin}"/> or <see cref="LeftJoin{TJoin}"/>.
+    /// </summary>
+    ISelectQuery<T> Where<TJoin>(Expression<Func<TJoin, bool>> predicate) where TJoin : class;
+
+    // ── Joins ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Adds an INNER JOIN to <typeparamref name="TJoin"/>.
+    /// The two-parameter lambda specifies the join condition:
+    /// <c>(t, j) => t.ForeignKeyId == j.Id</c>.
+    /// The query still returns <typeparamref name="T"/> rows filtered by the join.
+    /// </summary>
+    ISelectQuery<T> InnerJoin<TJoin>(Expression<Func<T, TJoin, bool>> condition) where TJoin : class, new();
+
+    /// <summary>
+    /// Adds a LEFT JOIN to <typeparamref name="TJoin"/>.
+    /// Rows from the primary table are always included; joined columns are NULL when
+    /// there is no matching row in <typeparamref name="TJoin"/>.
+    /// </summary>
+    ISelectQuery<T> LeftJoin<TJoin>(Expression<Func<T, TJoin, bool>> condition) where TJoin : class, new();
+
+    // ── Grouping ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Adds a GROUP BY column. Multiple calls produce a multi-column GROUP BY.
+    /// </summary>
+    ISelectQuery<T> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector);
+
+    /// <summary>
+    /// Adds a raw SQL GROUP BY fragment (escape hatch).
+    /// </summary>
+    ISelectQuery<T> GroupBy(string rawSql);
+
+    // ── Having ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Adds a HAVING condition as a lambda predicate.
+    /// Typically combined with aggregate expressions via <see cref="Expr"/>.
+    /// </summary>
+    ISelectQuery<T> Having(Expression<Func<T, bool>> predicate);
+
+    /// <summary>
+    /// Adds a HAVING condition built with the fluent expression builder, including
+    /// aggregate expressions such as <c>Expr.Count().Gt().Value(2)</c>.
+    /// </summary>
+    ISelectQuery<T> Having(IConditionExpr condition);
+
+    /// <summary>
+    /// Adds a raw SQL HAVING fragment (escape hatch).
+    /// Parameters use <c>@name</c> syntax; supply via anonymous object or dictionary.
+    /// </summary>
+    ISelectQuery<T> Having(string rawSql, object? parameters = null);
+
     // ── Ordering ──────────────────────────────────────────────────────────────
 
     /// <summary>Sorts by the specified column ascending.</summary>
@@ -50,6 +112,18 @@ public interface ISelectQuery<T> where T : class, new()
 
     /// <summary>Adds a secondary descending sort.</summary>
     ISelectQuery<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> keySelector);
+
+    /// <summary>
+    /// Appends a raw SQL ORDER BY fragment (escape hatch for functions, expressions, etc.).
+    /// </summary>
+    ISelectQuery<T> OrderBy(string rawSql);
+
+    // ── Deduplication ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Emits <c>SELECT DISTINCT</c>, removing duplicate rows from the result set.
+    /// </summary>
+    ISelectQuery<T> Distinct();
 
     // ── Pagination ────────────────────────────────────────────────────────────
 
@@ -96,4 +170,29 @@ public interface ISelectQuery<T> where T : class, new()
     /// <summary>Returns the minimum value of <paramref name="selector"/> across all matching rows, or <c>null</c> if no rows match.</summary>
     Task<TResult?> MinAsync<TResult>(Expression<Func<T, TResult>> selector, CancellationToken ct = default)
         where TResult : struct;
+
+    /// <summary>
+    /// Returns the average of <paramref name="selector"/> across all matching rows as a
+    /// <c>double</c>, or <c>null</c> if no rows match. SQL AVG always produces a
+    /// floating-point result regardless of the column type.
+    /// </summary>
+    Task<double?> AverageAsync<TResult>(Expression<Func<T, TResult>> selector, CancellationToken ct = default)
+        where TResult : struct;
+
+    // ── Projection ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Switches the result type to <typeparamref name="TDto"/> by selecting only the
+    /// columns declared on that DTO via <see cref="ColumnInfo"/> attributes.
+    /// Returns an <see cref="ISelectProjectedQuery{TDto}"/> on which ordering,
+    /// pagination, and terminals can be chained.
+    /// </summary>
+    /// <remarks>
+    /// Structural modifiers (<see cref="Where(System.Linq.Expressions.Expression{System.Func{T, bool}})"/>,
+    /// <see cref="InnerJoin{TJoin}"/>, <see cref="GroupBy{TKey}"/>, etc.) must be
+    /// called before <c>Select</c>; ordering and pagination can be called either
+    /// before or after.
+    /// </remarks>
+    ISelectProjectedQuery<TDto> Select<TDto>() where TDto : class, new();
 }
+

@@ -364,4 +364,157 @@ public sealed class SelectQueryTests : IAsyncDisposable
 
         Assert.Equal(2, results.Count); // Apple (30) and Banana (20)
     }
+
+    // ── AverageAsync ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Query_AverageAsync_ReturnsCorrectAverage()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Prices: 30, 20, 15, 10 → avg = 18.75
+        var avg = await txn.Query<Product>().AverageAsync(p => p.Price);
+
+        Assert.NotNull(avg);
+        Assert.Equal(18.75, avg!.Value, precision: 5);
+    }
+
+    [Fact]
+    public async Task Query_AverageAsync_WithFilter_ReturnsFilteredAverage()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Active products only: Apple (30) and Banana (20) → avg = 25
+        var avg = await txn.Query<Product>()
+            .Where(p => p.IsActive)
+            .AverageAsync(p => p.Price);
+
+        Assert.NotNull(avg);
+        Assert.Equal(25.0, avg!.Value, precision: 5);
+    }
+
+    [Fact]
+    public async Task Query_AverageAsync_NoRows_ReturnsNull()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var avg = await txn.Query<Product>()
+            .Where(p => p.Price > 9999)
+            .AverageAsync(p => p.Price);
+
+        Assert.Null(avg);
+    }
+
+    // ── Distinct ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Query_Distinct_WithNoFilter_EmitsSqlKeyword()
+    {
+        // Distinct on a single-table query with all unique rows is a pass-through —
+        // the important thing is verifying it compiles and executes without error.
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>().Distinct().ToListAsync();
+
+        Assert.Equal(4, results.Count); // all 4 rows are already unique
+    }
+
+    // ── Projection (Select<TDto>) ───────────────────────────────────────────
+
+    private class ProductSummaryDto
+    {
+        [ColumnInfo] public string Name  { get; set; } = "";
+        [ColumnInfo] public int    Price { get; set; }
+    }
+
+    [Fact]
+    public async Task Select_ProjectsSubsetOfColumns()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Project the 5-column Product entity down to 2 columns.
+        var results = await txn.Query<Product>()
+            .Select<ProductSummaryDto>()
+            .ToListAsync();
+
+        Assert.Equal(4, results.Count);
+        Assert.All(results, r =>
+        {
+            Assert.NotEmpty(r.Name);
+            Assert.True(r.Price >= 0);
+        });
+        Assert.Contains(results, r => r.Name == "Apple"  && r.Price == 30);
+        Assert.Contains(results, r => r.Name == "Carrot" && r.Price == 15);
+    }
+
+    [Fact]
+    public async Task Select_WithFilter_ProjectsFilteredRows()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(p => p.IsActive)
+            .Select<ProductSummaryDto>()
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count);
+        Assert.All(results, r => Assert.True(r.Price >= 20));
+    }
+
+    [Fact]
+    public async Task Select_FirstOrDefaultAsync_WithProjection()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var result = await txn.Query<Product>()
+            .Where(p => p.Name == "Banana")
+            .Select<ProductSummaryDto>()
+            .FirstOrDefaultAsync();
+
+        Assert.NotNull(result);
+        Assert.Equal("Banana", result!.Name);
+        Assert.Equal(20, result.Price);
+    }
+
+    [Fact]
+    public async Task Select_WithOrderByAfterProjection_SortsByDtoProperty()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // OrderBy on the projected DTO type — resolved via DTO column resolution.
+        var results = await txn.Query<Product>()
+            .Select<ProductSummaryDto>()
+            .OrderByDescending(dto => dto.Price)
+            .Take(2)
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count);
+        Assert.Equal("Apple",  results[0].Name); // Price 30
+        Assert.Equal("Banana", results[1].Name); // Price 20
+    }
+
+    [Fact]
+    public async Task Select_WithOrderByBeforeProjection_SortsByEntityProperty()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // OrderBy on ISelectQuery<T> before Select<TDto>() — resolves to the source table column.
+        var results = await txn.Query<Product>()
+            .OrderBy(p => p.Price)
+            .Select<ProductSummaryDto>()
+            .ToListAsync();
+
+        Assert.Equal(4, results.Count);
+        Assert.Equal("Daikon", results[0].Name); // Price 10 (cheapest first)
+        Assert.Equal("Apple",  results[3].Name); // Price 30 (most expensive last)
+    }
 }

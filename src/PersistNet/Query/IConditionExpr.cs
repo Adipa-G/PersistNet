@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
 
@@ -18,9 +19,19 @@ public interface IConditionExpr { }
 /// </summary>
 internal sealed class LambdaConditionExpr : IConditionExpr
 {
-    internal LambdaExpression Lambda { get; }
+    internal LambdaExpression Lambda     { get; }
+    /// <summary>
+    /// Non-null when this predicate applies to a <em>joined</em> entity type
+    /// (e.g. from <c>.Where&lt;TJoin&gt;(j => j.Country == "AU")</c>).
+    /// <c>null</c> means it applies to the primary entity.
+    /// </summary>
+    internal System.Type?     EntityType { get; }
 
-    internal LambdaConditionExpr(LambdaExpression lambda) => Lambda = lambda;
+    internal LambdaConditionExpr(LambdaExpression lambda, System.Type? entityType = null)
+    {
+        Lambda     = lambda;
+        EntityType = entityType;
+    }
 }
 
 /// <summary>
@@ -77,5 +88,50 @@ internal sealed class NullCheckExpr : IConditionExpr
         Property   = property;
         EntityType = entityType;
         IsNull     = isNull;
+    }
+}
+
+/// <summary>
+/// A raw SQL fragment inserted verbatim into a WHERE or HAVING clause, with optional
+/// bound parameters supplied as an anonymous object or dictionary.
+/// Example: <c>.Where("Price BETWEEN @lo AND @hi", new { lo = 10, hi = 100 })</c>
+/// </summary>
+internal sealed class RawSqlConditionExpr : IConditionExpr
+{
+    internal string                              Sql    { get; }
+    internal List<(string Name, object? Value)>  Params { get; }
+
+    internal RawSqlConditionExpr(string sql, List<(string Name, object? Value)> @params)
+    {
+        Sql    = sql;
+        Params = @params;
+    }
+}
+
+/// <summary>
+/// An aggregate comparison for use in HAVING clauses:
+/// <c>Expr.Count().Gt().Value(2)</c> → <c>COUNT(*) &gt; @p0</c>.
+/// <c>Expr.Sum&lt;T&gt;(p => p.Amount).Gt().Value(1000)</c> → <c>SUM("Amount") &gt; @p0</c>.
+/// </summary>
+internal sealed class AggregateConditionExpr : IConditionExpr
+{
+    internal string        AggFunc    { get; }  // "COUNT", "SUM", "AVG", "MAX", "MIN"
+    internal PropertyInfo? Property   { get; }  // null → COUNT(*)
+    internal System.Type?  EntityType { get; }
+    internal ComparisonOp  Op         { get; }
+    internal object?[]     Values     { get; }
+
+    internal AggregateConditionExpr(
+        string        aggFunc,
+        PropertyInfo? property,
+        System.Type?  entityType,
+        ComparisonOp  op,
+        object?[]     values)
+    {
+        AggFunc    = aggFunc;
+        Property   = property;
+        EntityType = entityType;
+        Op         = op;
+        Values     = values;
     }
 }

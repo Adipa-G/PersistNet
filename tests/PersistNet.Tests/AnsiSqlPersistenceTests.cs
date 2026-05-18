@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using PersistNet.DbAbstraction;
@@ -118,6 +119,61 @@ public class AnsiSqlPersistenceTests
         // Two value tuples separated by ", "
         var valuesPart = sql.Substring(sql.IndexOf("VALUES") + 6).Trim();
         Assert.Equal(2, valuesPart.Split("), (").Length);
+    }
+
+    // ── SQL Server OUTPUT INSERTED ────────────────────────────────────────────
+
+    private static MultiRowInsert MakeInsertWithKey(string table, string keyCol,
+        IReadOnlyList<string> cols, params IReadOnlyList<object?>[] rows) =>
+        new(table, null, cols, rows, KeyCallbacks: null, AutoIncrKeyColumn: keyCol);
+
+    [Fact]
+    public void Given_SingleRowInsert_When_BuildInsertWithOutputSql_Then_ContainsOutputClause()
+    {
+        var ss     = SqlServer();
+        var insert = MakeInsertWithKey("orders", "OrderId", new[] { "Name", "OrderDate" },
+            new object?[] { "Acme", new DateTime(2026, 1, 1) });
+
+        var (sql, parameters) = ss.BuildInsertWithOutputSql(insert, insert.ValueRows);
+
+        Assert.Contains("OUTPUT INSERTED.[OrderId]", sql);
+        Assert.StartsWith("INSERT INTO [orders] ([Name], [OrderDate]) OUTPUT INSERTED.[OrderId]", sql);
+        Assert.Contains("VALUES (@p0, @p1)", sql);
+        Assert.Equal(2, parameters.Count);
+    }
+
+    [Fact]
+    public void Given_MultipleRowInsert_When_BuildInsertWithOutputSql_Then_SingleValuesClause()
+    {
+        var ss     = SqlServer();
+        var insert = MakeInsertWithKey("orders", "OrderId", new[] { "Name", "OrderDate" },
+            new object?[] { "Acme", new DateTime(2026, 1, 1) },
+            new object?[] { "Beta", new DateTime(2026, 2, 1) },
+            new object?[] { "Ceta", new DateTime(2026, 3, 1) });
+
+        var (sql, parameters) = ss.BuildInsertWithOutputSql(insert, insert.ValueRows);
+
+        Assert.Contains("OUTPUT INSERTED.[OrderId]", sql);
+        // Three rows → three parameter tuples in the VALUES list.
+        var valuesPart = sql[(sql.IndexOf("VALUES", StringComparison.Ordinal) + 6)..].Trim();
+        Assert.Equal(3, valuesPart.Split("), (").Length);
+        Assert.Equal(6, parameters.Count);
+        // Parameters are named @p0 through @p5 continuously.
+        Assert.Equal("@p0", parameters[0].Name);
+        Assert.Equal("@p5", parameters[5].Name);
+    }
+
+    [Fact]
+    public void Given_SchemaQualifiedTable_When_BuildInsertWithOutputSql_Then_SchemaIsQuoted()
+    {
+        var ss     = SqlServer();
+        var insert = new MultiRowInsert("orders", "dbo", new[] { "Name" },
+            new[] { (IReadOnlyList<object?>)new object?[] { "Acme" } },
+            AutoIncrKeyColumn: "OrderId");
+
+        var (sql, _) = ss.BuildInsertWithOutputSql(insert, insert.ValueRows);
+
+        Assert.StartsWith("INSERT INTO [dbo].[orders]", sql);
     }
 
     // ── UPDATE — single key ──────────────────────────────────────────────────

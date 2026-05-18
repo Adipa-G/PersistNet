@@ -489,6 +489,7 @@ internal sealed class ChangeSetBuilder
                     var converted = Convert.ChangeType(generatedId, keyCol.Property.PropertyType);
                     keyCol.Property.SetValue(entityRef, converted);
                 };
+                row.AutoIncrKeyColumn = autoIncKey.ColumnName;
             }
         }
 

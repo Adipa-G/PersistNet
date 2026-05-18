@@ -72,8 +72,11 @@ internal static class StatementOptimizer
         var callbacks = vtable.Rows.Select(r => r.OnKeyGenerated).ToList();
         var hasCallbacks = callbacks.Any(c => c is not null);
 
+        // All rows in a batch share the same auto-increment key column (or none).
+        var keyColName = vtable.Rows.FirstOrDefault(r => r.AutoIncrKeyColumn is not null)?.AutoIncrKeyColumn;
+
         return new[] { new MultiRowInsert(vtable.TableName, vtable.Schema, columns, valueRows,
-            hasCallbacks ? callbacks : null) };
+            hasCallbacks ? callbacks : null, keyColName) };
     }
 
     // -------------------------------------------------------------------------

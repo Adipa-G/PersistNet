@@ -37,7 +37,13 @@ internal sealed record MultiRowInsert(
     /// When the entire list is <c>null</c>, no hydration is needed and the batch-insert
     /// path is used.
     /// </summary>
-    IReadOnlyList<Action<object?>?>? KeyCallbacks = null)
+    IReadOnlyList<Action<object?>?>? KeyCallbacks = null,
+    /// <summary>
+    /// Name of the auto-increment primary-key column, when known.
+    /// SQL Server uses this to emit <c>OUTPUT INSERTED.[keyCol]</c> and hydrate
+    /// all generated keys in a single batch round trip instead of one per row.
+    /// </summary>
+    string? AutoIncrKeyColumn = null)
     : OptimizedOperation(TableName, Schema, OperationType.Insert);
 
 /// <summary>

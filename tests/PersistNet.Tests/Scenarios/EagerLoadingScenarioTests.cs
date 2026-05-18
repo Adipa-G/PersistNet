@@ -420,4 +420,38 @@ public sealed class EagerLoadingScenarioTests : ScenarioTestBase
         Assert.NotNull(post.Topic);
         Assert.Equal(1, post.Topic!.Id);
     }
+
+    /// <summary>
+    /// IncludeAll — 3-level graph: loading a topic via IncludeAll() loads Posts (level 2)
+    /// and recursively loads Comments inside each Post (level 3), without naming any
+    /// navigation property explicitly.  Mirrors <see cref="GetAsync_Include_ThreeLevelGraph_LoadsAllLevels"/>.
+    /// </summary>
+    [Fact]
+    public async Task GetAsync_IncludeAll_ThreeLevelGraph_LoadsAllLevels()
+    {
+        await CreateTopicPostCommentTablesAsync();
+        await ExecAsync("INSERT INTO el_topics VALUES (1, 'Deep Loading')");
+        await ExecAsync("INSERT INTO el_posts VALUES (1, 1, 'First post')");
+        await ExecAsync("INSERT INTO el_comments VALUES (1, 1, 'Great post!')");
+        await ExecAsync("INSERT INTO el_comments VALUES (2, 1, 'Agreed.')");
+
+        await using var txn = await Factory.OpenTransactionAsync();
+        var topic = await txn.GetAsync<ElTopic>(1).IncludeAll();
+
+        // Level 1 → Level 2: posts loaded by IncludeAll.
+        Assert.NotNull(topic.Posts);
+        Assert.Single(topic.Posts!);
+        var post = topic.Posts![0];
+        Assert.Equal("First post", post.Body);
+
+        // Level 2 → Level 3: comments recursively loaded by IncludeAll.
+        Assert.NotNull(post.Comments);
+        Assert.Equal(2, post.Comments!.Count);
+        Assert.Contains(post.Comments, c => c.Text == "Great post!");
+        Assert.Contains(post.Comments, c => c.Text == "Agreed.");
+
+        // Back-references populated (cycle cut off — no infinite loop).
+        Assert.NotNull(post.Topic);
+        Assert.Equal(1, post.Topic!.Id);
+    }
 }

@@ -100,7 +100,7 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
 
     // ── INSERT ──────────────────────────────────────────────────────────────
 
-    public async Task ExecuteInsertAsync(MultiRowInsert insert, CancellationToken ct = default)
+    public virtual async Task ExecuteInsertAsync(MultiRowInsert insert, CancellationToken ct = default)
     {
         if (insert.KeyCallbacks is null)
         {

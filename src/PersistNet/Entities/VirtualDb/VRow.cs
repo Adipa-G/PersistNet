@@ -14,6 +14,13 @@ internal class VRow
     /// </summary>
     public Action<object?>? OnKeyGenerated { get; set; }
 
+    /// <summary>
+    /// Name of the auto-increment primary-key column, populated alongside
+    /// <see cref="OnKeyGenerated"/>.  Providers that support <c>OUTPUT INSERTED</c>
+    /// (SQL Server) use this to hydrate keys in a single batch round trip.
+    /// </summary>
+    public string? AutoIncrKeyColumn { get; set; }
+
     public VRow(OperationType operationType)
     {
         OperationType = operationType;

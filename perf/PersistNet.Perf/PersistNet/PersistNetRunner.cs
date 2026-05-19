@@ -68,7 +68,7 @@ public sealed class PersistNetRunner
 
     // ── INSERT ────────────────────────────────────────────────────────────────
 
-    private async Task<int[]> InsertAsync(SeedOrder[] seeds)
+    internal async Task<int[]> InsertAsync(SeedOrder[] seeds)
     {
         // 1. Insert orders; capture entities so OUTPUT INSERTED populates OrderId.
         var orders = new List<PnOrder>(seeds.Length);
@@ -138,7 +138,7 @@ public sealed class PersistNetRunner
 
     // ── QUERY (all) ───────────────────────────────────────────────────────────
 
-    private async Task<int> QueryAllAsync()
+    internal async Task<int> QueryAllAsync()
     {
         await using var txn = await _factory.OpenTransactionAsync();
         var orders = await txn.Query<PnOrder>().ToListAsync();
@@ -148,7 +148,7 @@ public sealed class PersistNetRunner
 
     // ── QUERY (by id) ─────────────────────────────────────────────────────────
 
-    private async Task<int> QueryByIdAsync(int[] ids)
+    internal async Task<int> QueryByIdAsync(int[] ids)
     {
         await using var txn = await _factory.OpenTransactionAsync();
         foreach (var id in ids)
@@ -159,7 +159,7 @@ public sealed class PersistNetRunner
 
     // ── QUERY (condition) ─────────────────────────────────────────────────────
 
-    private async Task<int> QueryByCondAsync(DateTime cutoff)
+    internal async Task<int> QueryByCondAsync(DateTime cutoff)
     {
         await using var txn = await _factory.OpenTransactionAsync();
         var orders = await txn.QueryAsync<PnOrder>(
@@ -171,7 +171,7 @@ public sealed class PersistNetRunner
 
     // ── QUERY (full graph) ────────────────────────────────────────────────────
 
-    private async Task<int> QueryGraphAsync()
+    internal async Task<int> QueryGraphAsync()
     {
         await using var txn = await _factory.OpenTransactionAsync();
         var orders  = await txn.Query<PnOrder>().ToListAsync();
@@ -183,7 +183,7 @@ public sealed class PersistNetRunner
 
     // ── UPDATE ────────────────────────────────────────────────────────────────
 
-    private async Task<int> UpdateAsync(int[] sampleIds)
+    internal async Task<int> UpdateAsync(int[] sampleIds)
     {
         string idList = string.Join(",", sampleIds);
 
@@ -219,7 +219,7 @@ public sealed class PersistNetRunner
 
     // ── DELETE ────────────────────────────────────────────────────────────────
 
-    private async Task<int> DeleteAsync()
+    internal async Task<int> DeleteAsync()
     {
         int total = 0;
 

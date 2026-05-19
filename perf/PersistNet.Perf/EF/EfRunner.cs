@@ -51,7 +51,7 @@ public sealed class EfRunner
 
     // ── INSERT ────────────────────────────────────────────────────────────────
 
-    private async Task<int[]> InsertAsync(SeedOrder[] seeds)
+    internal async Task<int[]> InsertAsync(SeedOrder[] seeds)
     {
         var efOrders = seeds
             .Select(s => new EfOrder { Name = s.Name, OrderDate = s.OrderDate })
@@ -117,7 +117,7 @@ public sealed class EfRunner
 
     // ── QUERY (all) ───────────────────────────────────────────────────────────
 
-    private async Task<int> QueryAllAsync()
+    internal async Task<int> QueryAllAsync()
     {
         await using var ctx = CreateContext();
         var orders = await ctx.Orders.AsNoTracking().ToListAsync();
@@ -126,7 +126,7 @@ public sealed class EfRunner
 
     // ── QUERY (by id) ─────────────────────────────────────────────────────────
 
-    private async Task<int> QueryByIdAsync(int[] ids)
+    internal async Task<int> QueryByIdAsync(int[] ids)
     {
         await using var ctx = CreateContext();
         foreach (var id in ids)
@@ -136,7 +136,7 @@ public sealed class EfRunner
 
     // ── QUERY (condition) ─────────────────────────────────────────────────────
 
-    private async Task<int> QueryByCondAsync(DateTime cutoff)
+    internal async Task<int> QueryByCondAsync(DateTime cutoff)
     {
         await using var ctx = CreateContext();
         var orders = await ctx.Orders.AsNoTracking().Where(o => o.OrderDate >= cutoff).ToListAsync();
@@ -145,7 +145,7 @@ public sealed class EfRunner
 
     // ── QUERY (full graph) ────────────────────────────────────────────────────
 
-    private async Task<int> QueryGraphAsync()
+    internal async Task<int> QueryGraphAsync()
     {
         await using var ctx = CreateContext();
         var orders = await ctx.Orders
@@ -167,7 +167,7 @@ public sealed class EfRunner
 
     // ── UPDATE ────────────────────────────────────────────────────────────────
 
-    private async Task<int> UpdateAsync(int[] sampleIds)
+    internal async Task<int> UpdateAsync(int[] sampleIds)
     {
         await using var ctx = CreateContext();
         var orders = await ctx.Orders
@@ -198,7 +198,7 @@ public sealed class EfRunner
 
     // ── DELETE ────────────────────────────────────────────────────────────────
 
-    private async Task<int> DeleteAsync()
+    internal async Task<int> DeleteAsync()
     {
         int total = 0;
 

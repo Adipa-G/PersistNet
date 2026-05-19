@@ -1,5 +1,18 @@
+using BenchmarkDotNet.Running;
 using Microsoft.Data.SqlClient;
 using PersistNet.Perf;
+
+// Pass `-- --benchmark [--filter *]` to run BenchmarkDotNet instead of the quick run.
+// Examples:
+//   dotnet run -c Release --project perf/PersistNet.Perf -- --benchmark --filter *
+//   dotnet run -c Release --project perf/PersistNet.Perf -- --benchmark --filter *Read*
+//   dotnet run -c Release --project perf/PersistNet.Perf -- --benchmark --filter *Insert*
+if (args.Contains("--benchmark"))
+{
+    BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
+        .Run(args.Where(a => a != "--benchmark").ToArray());
+    return;
+}
 
 const int ProductCount   = 200;
 const int OrderCount     = 1000;

@@ -3,3 +3,4 @@
 /.vs/**
 /TestResults/
 /coverage/
+/BenchmarkDotNet.Artifacts/**/*

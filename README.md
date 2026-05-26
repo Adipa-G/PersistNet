@@ -11,24 +11,31 @@ PersistNet is a high-performance, attribute-driven ORM for .NET 8. It targets SQ
 3. [Entity Mapping](#entity-mapping)
    - [Table mapping](#table-mapping)
    - [Column mapping](#column-mapping)
+   - [Column types](#column-types)
    - [Index mapping](#index-mapping)
 4. [Relationships](#relationships)
    - [One-to-Many / Many-to-One](#one-to-many--many-to-one)
    - [One-to-One](#one-to-one)
    - [Many-to-Many](#many-to-many)
    - [Table-Per-Hierarchy Inheritance](#table-per-hierarchy-inheritance)
+   - [Table-Per-Type Inheritance](#table-per-type-inheritance)
+   - [Table-Per-Concrete-Type Inheritance](#table-per-concrete-type-inheritance)
+   - [Referential integrity rules](#referential-integrity-rules)
 5. [Querying](#querying)
    - [GetAsync — single entity by primary key](#getasync--single-entity-by-primary-key)
    - [Eager loading](#eager-loading)
    - [Query — fluent builder](#query--fluent-builder)
+   - [Expr API reference](#expr-api-reference)
    - [QueryAsync — raw SQL](#queryasync--raw-sql)
+   - [DTO projection from joins](#dto-projection-from-joins)
 6. [Saving and Deleting](#saving-and-deleting)
    - [Insert and update](#insert-and-update)
    - [Optimistic concurrency](#optimistic-concurrency)
    - [Delete](#delete)
 7. [Schema Management](#schema-management)
-8. [Benchmarks](#benchmarks)
-9. [License](#license)
+8. [Logging](#logging)
+9. [Benchmarks](#benchmarks)
+10. [License](#license)
 
 ---
 
@@ -58,7 +65,12 @@ using (var cmd = connection.CreateCommand())
     cmd.ExecuteNonQuery();
 }
 
-var factory = new TransactionFactory(connection, DbProvider.SQLite);
+// ILogger<TransactionFactory> is required — wire it from your DI container or
+// create one manually for console / test scenarios.
+using var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
+var logger = loggerFactory.CreateLogger<TransactionFactory>();
+
+var factory = new TransactionFactory(connection, DbProvider.SQLite, logger);
 
 // Create / migrate schema from all entity types in the assembly.
 var upgrader = SchemaUpgrader.FromAssembly(connection, DbProvider.SQLite,
@@ -80,7 +92,12 @@ using PersistNet;
 
 const string connStr = "Data Source=(localdb)\\MSSQLLocalDB;Initial Catalog=MyDb;Integrated Security=SSPI";
 
-var factory = new TransactionFactory(connStr, SqlClientFactory.Instance, DbProvider.SqlServer);
+// Resolve ILogger<TransactionFactory> from your DI container (e.g., IServiceProvider).
+// For quick setup outside a host:
+using var loggerFactory = LoggerFactory.Create(b => b.AddConsole());
+var logger = loggerFactory.CreateLogger<TransactionFactory>();
+
+var factory = new TransactionFactory(connStr, SqlClientFactory.Instance, DbProvider.SqlServer, logger);
 
 var upgrader = SchemaUpgrader.FromAssembly(
     new SqlConnection(connStr), DbProvider.SqlServer,
@@ -139,9 +156,10 @@ public class Order
 | Property | Description |
 |---|---|
 | `Key` | Marks the column as part of the primary key. |
+| `KeyOrder` | Ordering of this column within a composite primary key (0-based). |
 | `AutoIncrement` | Column is an IDENTITY / AUTOINCREMENT column. |
 | `ColumnName` | Override the database column name. |
-| `ColumnType` | Explicit `ColumnType` enum value (`Integer`, `Text`, `Decimal`, `DateTime`, `Boolean`, `Blob`, …). |
+| `ColumnType` | Explicit `ColumnType` enum value — see [Column types](#column-types). |
 | `Nullable` | Whether the column allows NULL. |
 | `Unique` | Adds a unique constraint on the column. |
 | `Size` | Character/byte length for string/blob columns. |
@@ -150,19 +168,47 @@ public class Order
 | `IsVersion` | Enables optimistic concurrency — see [Optimistic concurrency](#optimistic-concurrency). |
 | `IsDiscriminator` | Marks the discriminator column for TPH inheritance — see [Table-Per-Hierarchy Inheritance](#table-per-hierarchy-inheritance). |
 
+### Column types
+
+The `ColumnType` enum covers all supported database types:
+
+| Value | Description |
+|---|---|
+| `Integer` | 32-bit integer (`int`). |
+| `Long` | 64-bit integer (`long`). |
+| `Decimal` | Fixed-precision decimal. Pair with `Precision` and `Scale`. |
+| `Double` | 64-bit floating point. |
+| `Float` | 32-bit floating point. |
+| `Boolean` | Boolean / BIT column. |
+| `Char` | Fixed-length character. |
+| `Varchar` | Variable-length character (default for `string`). |
+| `Date` | Date only (no time). |
+| `Timestamp` | Date and time. Maps to `DateTime` / `DateTimeOffset`. |
+| `Guid` | UUID / UNIQUEIDENTIFIER. |
+| `Blob` | Binary data (`byte[]`). |
+| `Version` | Alias for an auto-incrementing row-version integer (same effect as `IsVersion = true`). |
+
+When `ColumnType` is omitted PersistNet infers the type from the property's CLR type.
+
 ### Index mapping
 
 Apply `[IndexInfo]` to the class (repeatable) to define composite or unique indexes.
 
 ```csharp
 [TableInfo(TableName = "order_items")]
-[IndexInfo(Columns = new[] { "OrderId", "LineNumber" }, Unique = true)]
+[IndexInfo(Name = "ux_order_line", Columns = new[] { "OrderId", "LineNumber" }, Unique = true)]
 [IndexInfo(Columns = new[] { "ProductId" })]
 public class OrderItem
 {
     // ...
 }
 ```
+
+| Property | Description |
+|---|---|
+| `Name` | Optional explicit name for the index. PersistNet generates a name when omitted. |
+| `Columns` | Column names included in the index, in order. |
+| `Unique` | Adds a UNIQUE constraint. |
 
 ---
 
@@ -347,10 +393,12 @@ public class Movie
 | Property | Description |
 |---|---|
 | `JoinTableName` | Name of the intermediate join table. |
+| `JoinTableSchema` | Optional database schema for the join table. |
 | `LeftKeyColumns` | Join table columns that reference the owning entity's PK. |
 | `RightKeyColumns` | Join table columns that reference the related entity's PK. |
 | `LeftForeignKeys` | PK columns on the owning entity. |
 | `RightForeignKeys` | PK columns on the related entity. |
+| `OnDelete` / `OnUpdate` | Referential action — see [Referential integrity rules](#referential-integrity-rules). |
 
 **Inserting actors and movies with a join:**
 
@@ -436,6 +484,124 @@ foreach (var v in vehicles)
 
 ---
 
+### Table-Per-Type Inheritance
+
+Each subtype has its own table. Apply `[TableInfo]` to **both** the base class and each derived class. PersistNet automatically creates a foreign key from each subtype table back to the base table and joins them on read.
+
+```csharp
+[TableInfo(TableName = "animals")]
+public class Animal
+{
+    [ColumnInfo(Key = true, AutoIncrement = true)]
+    public int Id { get; set; }
+
+    [ColumnInfo]
+    public string Name { get; set; } = "";
+}
+
+[TableInfo(TableName = "dogs")]
+public class Dog : Animal
+{
+    [ColumnInfo]
+    public string Breed { get; set; } = "";
+}
+
+[TableInfo(TableName = "cats")]
+public class Cat : Animal
+{
+    [ColumnInfo]
+    public int Lives { get; set; }
+}
+```
+
+Schema produced:
+
+- `animals (Id PK, Name)` — base table
+- `dogs (Id PK → animals.Id, Breed)` — subtype table with FK back to base
+- `cats (Id PK → animals.Id, Lives)`
+
+**Inserting and querying:**
+
+```csharp
+await using var txn = await factory.OpenTransactionAsync();
+
+txn.Save(new Dog { Name = "Rex",   Breed = "Labrador" });
+txn.Save(new Cat { Name = "Mochi", Lives = 9          });
+await txn.CommitAsync();
+// PersistNet writes one row to animals and one row to the subtype table per save.
+
+var dog = await txn.GetAsync<Dog>(1);
+// dog.Name comes from animals; dog.Breed comes from dogs — joined transparently.
+```
+
+---
+
+### Table-Per-Concrete-Type Inheritance
+
+Each concrete class has its own fully independent table. The abstract base class carries **no** `[TableInfo]` attribute; each concrete class gets its own table that includes all inherited columns.
+
+```csharp
+// No [TableInfo] here — signals TPC to PersistNet.
+public abstract class Shape
+{
+    [ColumnInfo(Key = true, AutoIncrement = true)]
+    public int Id { get; set; }
+
+    [ColumnInfo]
+    public string Color { get; set; } = "";
+}
+
+[TableInfo(TableName = "circles")]
+public class Circle : Shape
+{
+    [ColumnInfo]
+    public double Radius { get; set; }
+}
+
+[TableInfo(TableName = "rectangles")]
+public class Rectangle : Shape
+{
+    [ColumnInfo]
+    public double Width { get; set; }
+
+    [ColumnInfo]
+    public double Height { get; set; }
+}
+```
+
+Schema produced:
+
+- `circles (Id PK, Color, Radius)` — inherited columns repeated
+- `rectangles (Id PK, Color, Width, Height)` — inherited columns repeated
+
+No foreign keys exist between the tables; each concrete type is queried and saved independently.
+
+---
+
+### Referential integrity rules
+
+`OnDelete` and `OnUpdate` can be set on `[ManyToOneRelationshipInfo]`, `[OneToOneRelationshipInfo]`, and `[ManyToManyRelationshipInfo]` to control the DDL constraint generated by `SchemaUpgrader`.
+
+```csharp
+[ManyToOneRelationshipInfo(
+    RelatedType = typeof(Department),
+    FromKeys    = new[] { "DepartmentId" },
+    ToKeys      = new[] { "Id" },
+    OnDelete    = ReferentialRuleType.Cascade,
+    OnUpdate    = ReferentialRuleType.Restrict)]
+public Department? Department { get; set; }
+```
+
+| Value | SQL equivalent |
+|---|---|
+| `Unspecified` | No referential action clause emitted (database default). |
+| `Cascade` | `ON DELETE CASCADE` / `ON UPDATE CASCADE` |
+| `Restrict` | `ON DELETE RESTRICT` / `ON UPDATE RESTRICT` |
+| `DoNothing` | `ON DELETE NO ACTION` / `ON UPDATE NO ACTION` |
+| `SetNull` | `ON DELETE SET NULL` / `ON UPDATE SET NULL` |
+
+---
+
 ## Querying
 
 ### GetAsync — single entity by primary key
@@ -502,21 +668,42 @@ var page = await txn.Query<Order>()
     .Take(10)
     .ToListAsync();
 
-int count = await txn.Query<Order>()
-    .Where(o => o.Status == "Pending")
-    .CountAsync();
+// First match (returns null when nothing matches).
+var latest = await txn.Query<Order>()
+    .Where(o => o.Status == "Active")
+    .OrderByDescending(o => o.CreatedAt)
+    .FirstOrDefaultAsync();
 
-bool exists = await txn.Query<Order>()
-    .AnyAsync(o => o.Reference == "ORD-999");
+// Scalar aggregates — each accepts an optional selector lambda.
+int    count   = await txn.Query<Order>().Where(o => o.Status == "Pending").CountAsync();
+bool   exists  = await txn.Query<Order>().AnyAsync(o => o.Reference == "ORD-999");
+decimal total  = await txn.Query<Order>().Where(o => o.CustomerId == 7).SumAsync(o => o.Total);
+decimal? max   = await txn.Query<Order>().MaxAsync(o => o.Total);
+decimal? min   = await txn.Query<Order>().MinAsync(o => o.Total);
+double?  avg   = await txn.Query<Order>().AverageAsync(o => o.Total);
+```
+
+**Distinct:**
+
+```csharp
+var customerIds = await txn.Query<Order>()
+    .Distinct()
+    .Select<CustomerIdDto>()
+    .ToListAsync();
 ```
 
 **Joins:**
 
 ```csharp
-// INNER JOIN — query still returns Order rows filtered by the join.
+// INNER JOIN — returns Order rows that have a matching Customer row.
 var orders = await txn.Query<Order>()
     .InnerJoin<Customer>((o, c) => o.CustomerId == c.Id)
     .Where<Customer>(c => c.Country == "AU")
+    .ToListAsync();
+
+// LEFT JOIN — returns all Order rows; Customer properties are null when no match.
+var orders = await txn.Query<Order>()
+    .LeftJoin<Customer>((o, c) => o.CustomerId == c.Id)
     .ToListAsync();
 ```
 
@@ -547,9 +734,69 @@ var summaries = await txn.Query<Order>()
     .ToListAsync();
 ```
 
+### Expr API reference
+
+The `Expr` static class builds strongly-typed SQL conditions for use with `Where`, `Having`, and other fluent methods. It is most useful when a lambda predicate cannot express what you need (e.g. `LIKE`, `BETWEEN`, aggregate conditions in `HAVING`).
+
+**Field comparisons** — `Expr.Field<T>(x => x.Property).Op().Value(v)`
+
+```csharp
+using static PersistNet.Expr;
+
+// Equal / not-equal
+var eq  = Field<Order>(o => o.Status).Eq().Value("Active");
+var neq = Field<Order>(o => o.Status).Neq().Value("Cancelled");
+
+// Range
+var gt  = Field<Order>(o => o.Total).Gt().Value(100m);
+var rng = Field<Order>(o => o.Total).Between().Values(50m, 200m);
+
+// Pattern matching
+var like = Field<Order>(o => o.Reference).Like().Value("ORD-%");
+
+// Collection membership
+var ids  = new[] { 1, 2, 3 };
+var inEx = Field<Order>(o => o.CustomerId).In().Values(ids);
+
+// Null checks (no value needed)
+IConditionExpr isNull    = Field<Order>(o => o.Notes).IsNull();
+IConditionExpr isNotNull = Field<Order>(o => o.Notes).IsNotNull();
+```
+
+**Logical combinators**
+
+```csharp
+// AND / OR over any number of conditions
+var both   = And(Field<Order>(o => o.Status).Eq().Value("Active"),
+                 Field<Order>(o => o.Total).Gt().Value(0m));
+
+var either = Or(Field<Order>(o => o.Status).Eq().Value("Pending"),
+                Field<Order>(o => o.Status).Eq().Value("Active"));
+
+// Raw SQL escape hatch
+var raw = RawSql("Total BETWEEN @lo AND @hi", new { lo = 50m, hi = 200m });
+```
+
+**Aggregate expressions** — used in `Having`
+
+```csharp
+// COUNT(*) > 5
+var havingExpr = Count().Gt().Value(5);
+
+// SUM of a specific column >= 1000
+var sumExpr = Sum<Order>(o => o.Total).Ge().Value(1000m);
+
+// All aggregate builders: Count, Count<T>(field), Sum, Avg, Max, Min
+var result = await txn.Query<Order>()
+    .GroupBy(o => o.CustomerId)
+    .Having(Sum<Order>(o => o.Total).Ge().Value(500m))
+    .Select<CustomerTotalDto>()
+    .ToListAsync();
+```
+
 ### QueryAsync — raw SQL
 
-`QueryAsync` executes arbitrary SQL and materializes each result row into `T`. Properties are matched by `[ColumnInfo(ColumnName = "...")]`.
+`QueryAsync` executes arbitrary SQL and materializes each result row into `T`. Column names in the result set are matched to properties by `[ColumnInfo(ColumnName = "...")]`; when `ColumnName` is omitted the property name is used directly.
 
 ```csharp
 await using var txn = await factory.OpenTransactionAsync();
@@ -558,6 +805,40 @@ var results = await txn.QueryAsync<Order>(
     "SELECT * FROM orders WHERE CustomerId = @customerId AND Total > @min",
     new { customerId = 7, min = 100m });
 ```
+
+Parameters can be an anonymous object, a `Dictionary<string, object?>`, or any POCO. Each property becomes a `@PropertyName` parameter.
+
+### DTO projection from joins
+
+When a raw SQL query or a multi-join fluent query returns columns from several tables you may have name collisions (e.g., both `orders` and `customers` have an `Id` column). Use `[FromTable]` on a DTO property to tell PersistNet which table's column to read.
+
+```csharp
+public class OrderWithCustomer
+{
+    // Reads Id from the orders table.
+    [FromTable(typeof(Order))]
+    public int Id { get; set; }
+
+    [ColumnInfo(ColumnName = "Reference")]
+    public string Reference { get; set; } = "";
+
+    // Reads Id from the customers table.
+    [FromTable(typeof(Customer))]
+    public int CustomerId { get; set; }
+
+    [FromTable(typeof(Customer), ColumnName = "Name")]
+    public string CustomerName { get; set; } = "";
+}
+
+var rows = await txn.QueryAsync<OrderWithCustomer>(@"
+    SELECT o.Id, o.Reference, c.Id, c.Name
+    FROM   orders   o
+    JOIN   customers c ON c.Id = o.CustomerId
+    WHERE  o.Status = @status",
+    new { status = "Active" });
+```
+
+`[FromTable(typeof(Entity))]` resolves the column name via the entity's own `[ColumnInfo]` mapping so that database column name overrides are respected automatically.
 
 ---
 
@@ -594,7 +875,7 @@ var saved = await txn.SaveAndCommitAsync(new Order { CustomerId = 1, Total = 50m
 
 ### Optimistic concurrency
 
-Mark a column with `IsVersion = true`. On every `UPDATE`, PersistNet appends `AND RowVersion = @current` to the WHERE clause and increments the value automatically. If the row has been modified by another transaction the update affects zero rows and an exception is thrown.
+Mark a column with `IsVersion = true`. On every `UPDATE`, PersistNet appends `AND RowVersion = @current` to the WHERE clause and increments the value automatically. If the row has been modified by another transaction the update affects zero rows and a `ConcurrencyException` is thrown.
 
 ```csharp
 [TableInfo(TableName = "orders")]
@@ -610,6 +891,31 @@ public class Order
     public int RowVersion { get; set; }   // incremented automatically on each update
 }
 ```
+
+**Handling concurrency conflicts:**
+
+```csharp
+try
+{
+    await using var txn = await factory.OpenTransactionAsync();
+    var order = await txn.GetAsync<Order>(1);
+    order.Total = 149.99m;
+    txn.Save(order);
+    await txn.CommitAsync();
+}
+catch (ConcurrencyException ex)
+{
+    Console.WriteLine($"Conflict on '{ex.TableName}': " +
+        $"expected {ex.ExpectedRows} row(s) updated but got {ex.ActualRows}.");
+    // Reload and retry, or surface the conflict to the user.
+}
+```
+
+| Property | Description |
+|---|---|
+| `TableName` | The table where the conflict was detected. |
+| `ExpectedRows` | Number of rows PersistNet expected to update. |
+| `ActualRows` | Actual rows updated by the database (typically 0 on conflict). |
 
 ### Delete
 
@@ -653,6 +959,87 @@ if (!await upgrader.IsUpToDateAsync())
 ```
 
 `ApplyAsync` handles tables, columns, foreign keys, and indexes in the correct order — creating objects before anything that depends on them and dropping constraints before the objects they reference.
+
+**Exporting DDL without executing it:**
+
+```csharp
+// Returns the ordered list of SQL statements that would be applied.
+// Nothing is executed against the database.
+IReadOnlyList<string> statements = await upgrader.ExportMigrationSqlAsync();
+
+foreach (var sql in statements)
+    Console.WriteLine(sql);
+```
+
+**Filtering types from an assembly:**
+
+```csharp
+// Only include types in a specific namespace.
+var upgrader = SchemaUpgrader.FromAssembly(
+    connection, DbProvider.SQLite,
+    typeof(Order).Assembly,
+    filter: t => t.Namespace == "MyApp.Entities");
+```
+
+---
+
+## Logging
+
+`TransactionFactory` integrates with **Microsoft.Extensions.Logging**. An `ILogger<TransactionFactory>` is **required** by both constructor overloads — it cannot be `null`.
+
+Every SQL statement executed against the database is logged at the **Debug** level with the format:
+
+```
+Executing SQL: {sql} | Params: {parameters}
+```
+
+**Wiring a logger outside a generic host:**
+
+```csharp
+using Microsoft.Extensions.Logging;
+
+using var loggerFactory = LoggerFactory.Create(builder =>
+    builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
+
+var logger = loggerFactory.CreateLogger<TransactionFactory>();
+
+// Connection-string mode (SQL Server / any ADO.NET provider).
+var factory = new TransactionFactory(
+    connectionString,
+    SqlClientFactory.Instance,
+    DbProvider.SqlServer,
+    logger);
+
+// Direct-connection mode (caller manages connection lifetime).
+var factory = new TransactionFactory(connection, DbProvider.SQLite, logger);
+```
+
+**Wiring via the generic host / ASP.NET Core DI:**
+
+```csharp
+// Program.cs
+builder.Services.AddSingleton<TransactionFactory>(sp =>
+{
+    var logger = sp.GetRequiredService<ILogger<TransactionFactory>>();
+    return new TransactionFactory(
+        connectionString,
+        SqlClientFactory.Instance,
+        DbProvider.SqlServer,
+        logger);
+});
+```
+
+Set the minimum log level to `Debug` for `PersistNet` in `appsettings.json` to see the SQL output:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "PersistNet": "Debug"
+    }
+  }
+}
+```
 
 ---
 

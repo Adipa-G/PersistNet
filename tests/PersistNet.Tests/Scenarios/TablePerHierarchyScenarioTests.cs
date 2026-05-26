@@ -6,23 +6,27 @@ using Xunit;
 namespace PersistNet.Tests.Scenarios;
 
 /// <summary>
-/// Scenario: Single-Table Inheritance (STI) hierarchy.
+/// Scenario: Table-Per-Hierarchy (TPH) inheritance.
+///
+/// All subtypes share a single table. A discriminator column identifies
+/// the concrete type at runtime. The base class carries <c>[SubTypeInfo]</c>
+/// attributes that map each discriminator value to a CLR subtype.
 ///
 /// Schema (one table for all vehicle types):
 ///   sc_inh_vehicles (Id, Make, VehicleType TEXT discriminator,
-///                    Doors INTEGER nullable,   -- Car only
-///                    Payload REAL nullable)    -- Truck only
+///                    Doors INTEGER nullable,   -- TphCar only
+///                    Payload REAL nullable)    -- TphTruck only
 ///
-/// Subtypes: InhCar ("car"), InhTruck ("truck")
+/// Subtypes: TphCar ("car"), TphTruck ("truck")
 /// </summary>
-public sealed class InheritanceScenarioTests : ScenarioTestBase
+public sealed class TablePerHierarchyScenarioTests : ScenarioTestBase
 {
     // ── Entity model ────────────────────────────────────────────────────────
 
     [TableInfo(TableName = "sc_inh_vehicles")]
-    [SubTypeInfo(typeof(InhCar),   "car")]
-    [SubTypeInfo(typeof(InhTruck), "truck")]
-    private class InhVehicle
+    [SubTypeInfo(typeof(TphCar),   "car")]
+    [SubTypeInfo(typeof(TphTruck), "truck")]
+    private class TphVehicle
     {
         [ColumnInfo(Key = true, AutoIncrement = true)]
         public int Id { get; set; }
@@ -34,13 +38,13 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         public string VehicleType { get; set; } = "";
     }
 
-    private class InhCar : InhVehicle
+    private class TphCar : TphVehicle
     {
         [ColumnInfo]
         public int Doors { get; set; }
     }
 
-    private class InhTruck : InhVehicle
+    private class TphTruck : TphVehicle
     {
         [ColumnInfo]
         public double Payload { get; set; }
@@ -70,7 +74,7 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         await CreateTableAsync();
 
         await using var txn = await Factory.OpenTransactionAsync();
-        txn.Save(new InhCar { Make = "Toyota", Doors = 4 }); // Id = 0 → INSERT
+        txn.Save(new TphCar { Make = "Toyota", Doors = 4 }); // Id = 0 → INSERT
         await txn.CommitAsync();
 
         Assert.Equal(1L, await CountAsync("sc_inh_vehicles"));
@@ -91,7 +95,7 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         await CreateTableAsync();
 
         await using var txn = await Factory.OpenTransactionAsync();
-        txn.Save(new InhTruck { Make = "Ford", Payload = 5.5 }); // Id = 0 → INSERT
+        txn.Save(new TphTruck { Make = "Ford", Payload = 5.5 }); // Id = 0 → INSERT
         await txn.CommitAsync();
 
         Assert.Equal(1L, await CountAsync("sc_inh_vehicles"));
@@ -113,7 +117,7 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         await ExecAsync("INSERT INTO sc_inh_vehicles VALUES (1, 'Honda', 'car', 2, NULL)");
 
         await using var txn = await Factory.OpenTransactionAsync();
-        var car = await txn.GetAsync<InhCar>(1);
+        var car = await txn.GetAsync<TphCar>(1);
 
         Assert.Equal(1,       car.Id);
         Assert.Equal("Honda", car.Make);
@@ -131,7 +135,7 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         await ExecAsync("INSERT INTO sc_inh_vehicles VALUES (1, 'Volvo', 'truck', NULL, 12.0)");
 
         await using var txn = await Factory.OpenTransactionAsync();
-        var truck = await txn.GetAsync<InhTruck>(1);
+        var truck = await txn.GetAsync<TphTruck>(1);
 
         Assert.Equal(1,       truck.Id);
         Assert.Equal("Volvo", truck.Make);
@@ -149,9 +153,9 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         await CreateTableAsync();
 
         await using var txn = await Factory.OpenTransactionAsync();
-        txn.Save(new InhCar   { Make = "BMW",  Doors = 4 });    // Id = 0 → INSERT → auto-id 1
-        txn.Save(new InhTruck { Make = "MAN",  Payload = 20.0 }); // Id = 0 → INSERT → auto-id 2
-        txn.Save(new InhCar   { Make = "Audi", Doors = 2 });    // Id = 0 → INSERT → auto-id 3
+        txn.Save(new TphCar   { Make = "BMW",  Doors = 4 });    // Id = 0 → INSERT → auto-id 1
+        txn.Save(new TphTruck { Make = "MAN",  Payload = 20.0 }); // Id = 0 → INSERT → auto-id 2
+        txn.Save(new TphCar   { Make = "Audi", Doors = 2 });    // Id = 0 → INSERT → auto-id 3
         await txn.CommitAsync();
 
         Assert.Equal(3L, await CountAsync("sc_inh_vehicles"));
@@ -172,7 +176,7 @@ public sealed class InheritanceScenarioTests : ScenarioTestBase
         await ExecAsync("INSERT INTO sc_inh_vehicles VALUES (1, 'Kia', 'car', 5, NULL)");
 
         await using var txn = await Factory.OpenTransactionAsync();
-        var car = await txn.GetAsync<InhCar>(1);
+        var car = await txn.GetAsync<TphCar>(1);
         car.Doors = 3; // change only the subtype extra column
         txn.Save(car);
         await txn.CommitAsync();

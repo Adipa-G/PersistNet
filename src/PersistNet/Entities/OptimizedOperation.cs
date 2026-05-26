@@ -48,15 +48,35 @@ internal sealed record MultiRowInsert(
 
 /// <summary>
 /// UPDATE operation where every affected row shares the same SET-clause values.
-/// Corresponds to:  UPDATE t SET c1=v1, c2=v2 WHERE keyCol IN (k1, k2, …)
-/// When <see cref="VersionColumn"/> is set, the WHERE clause also includes
-/// <c>AND VersionCol = <see cref="ExpectedVersionValue"/></c> for optimistic concurrency.
+///
+/// Two concurrency modes (at most one <c>Version*</c> field is non-null):
+/// <list type="bullet">
+///   <item>
+///     <term>Homogeneous version</term>
+///     <description>
+///       All rows share the same expected version (<see cref="ExpectedVersionValue"/> is set).
+///       SQL: <c>UPDATE t SET … WHERE keyCol IN (k1,k2,…) AND ver = @shared</c>
+///     </description>
+///   </item>
+///   <item>
+///     <term>Mixed versions</term>
+///     <description>
+///       Rows carry different expected versions (<see cref="ExpectedVersionValues"/> is set,
+///       parallel to <see cref="KeyValues"/>).
+///       SQL: <c>UPDATE t SET …, ver = ver+1 WHERE (key=@p AND ver=@p) OR …</c>
+///       (SQL Server) or <c>(key,ver) IN (…)</c> (ANSI/SQLite).
+///     </description>
+///   </item>
+/// </list>
 /// </summary>
 internal sealed record GroupedUpdate(
     string TableName,
     string? Schema,
-    /// <summary>Columns and values for the SET clause — identical for every row in this group.
-    /// When a version column is present, the version SET clause has the incremented (new) value.
+    /// <summary>
+    /// Columns and values for the SET clause — identical for every row in this group.
+    /// Does <b>not</b> include the version column when <see cref="ExpectedVersionValues"/>
+    /// is set; in that case the version increment is expressed as a computed SQL expression
+    /// (<c>ver = ver + 1</c>) rather than a fixed parameter.
     /// </summary>
     IReadOnlyList<SetClause> SetClauses,
     /// <summary>Ordered key column names used in the WHERE clause.</summary>
@@ -68,10 +88,17 @@ internal sealed record GroupedUpdate(
     /// </summary>
     string? VersionColumn = null,
     /// <summary>
-    /// The version value that must exist in the DB row (the value before this update).
-    /// Rows in this group all share this expected version because they were grouped by fingerprint.
+    /// Homogeneous-version mode: the single expected version shared by all rows in this group.
+    /// Mutually exclusive with <see cref="ExpectedVersionValues"/>.
     /// </summary>
-    object? ExpectedVersionValue = null)
+    object? ExpectedVersionValue = null,
+    /// <summary>
+    /// Mixed-version mode: one expected version per row, parallel to <see cref="KeyValues"/>.
+    /// When set, the version increment is emitted as <c>ver = ver + 1</c> in the SET clause
+    /// and the WHERE clause uses per-row <c>(key=@p AND ver=@p)</c> predicates.
+    /// Mutually exclusive with <see cref="ExpectedVersionValue"/>.
+    /// </summary>
+    IReadOnlyList<object?>? ExpectedVersionValues = null)
     : OptimizedOperation(TableName, Schema, OperationType.Update);
 
 /// <summary>

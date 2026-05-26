@@ -617,4 +617,55 @@ public sealed class SelectQueryJoinGroupByTests : IAsyncDisposable
         Assert.Equal(1,   results[0].CustomerId); // Customer.Id (Alice)
         Assert.Equal(100, results[0].Total);
     }
+
+    // ── Phase 2: AggregateExprBuilder operator gaps ───────────────────────
+
+    [Fact]
+    public async Task GroupBy_Having_Sum_Lt_Threshold()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Asia  SUM(Total) = 100+300+150+50 = 600  → 600 ≮ 500 → excluded
+        // Europe SUM(Total) = 200               → 200 < 500 → included
+        var results = await txn.Query<Order>()
+            .GroupBy(o => o.Region)
+            .Having(Expr.Sum<Order>(o => o.Total).Lt().Value(500))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Europe", results[0].Region);
+    }
+
+    [Fact]
+    public async Task GroupBy_Having_Sum_Le_Threshold()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Asia SUM = 600 > 200 → excluded; Europe SUM = 200 ≤ 200 → included
+        var results = await txn.Query<Order>()
+            .GroupBy(o => o.Region)
+            .Having(Expr.Sum<Order>(o => o.Total).Le().Value(200))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Europe", results[0].Region);
+    }
+
+    [Fact]
+    public async Task GroupBy_Having_Count_Column_Eq()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // COUNT("Id") = 1 → only Europe (1 order); Asia has 4 orders
+        var results = await txn.Query<Order>()
+            .GroupBy(o => o.Region)
+            .Having(Expr.Count<Order>(o => o.Id).Eq().Value(1))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Europe", results[0].Region);
+    }
 }

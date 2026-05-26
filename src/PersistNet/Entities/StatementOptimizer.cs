@@ -133,11 +133,14 @@ internal static class StatementOptimizer
 
         // Group by fingerprint — preserving insertion order of groups so that the
         // output order is deterministic (important for tests and for SQL ordering).
+        // Fingerprint is based on SET-clause values only; the version baseline is NOT
+        // part of the fingerprint so that rows sharing identical data changes but at
+        // different starting versions are merged into one group.
         var groups = new Dictionary<string, (
             List<SetClause> SetClauses,
             List<IReadOnlyList<object?>> KeyValues,
             string? VersionColumn,
-            object? ExpectedVersionValue)>(StringComparer.Ordinal);
+            List<object?> ExpectedVersionValues)>(StringComparer.Ordinal);
         var groupOrder = new List<string>();
 
         foreach (var row in vtable.Rows)
@@ -153,15 +156,11 @@ internal static class StatementOptimizer
                 .Where(c => keyColNames.Contains(c.ColumnName))
                 .ToList();
 
-            // Fingerprint includes regular SET values + version new-value so that
-            // rows sharing the same old version group together.
-            long newVersionValue = versionCell is not null
-                ? (long)Convert.ChangeType(versionCell.Value!, typeof(long)) + 1
-                : 0;
-
+            // Fingerprint is data values only — version baseline is excluded so that
+            // entities at different starting versions collapse into the same group when
+            // they carry the same data change.
             var fingerprint = string.Join("|", setCells.Select(
-                c => $"{c.ColumnName}={(c.Value is null ? NullSentinel : c.Value)}"))
-                + (versionCell is not null ? $"|__ver={newVersionValue}" : "");
+                c => $"{c.ColumnName}={(c.Value is null ? NullSentinel : c.Value)}"));
 
             if (!groups.TryGetValue(fingerprint, out var group))
             {
@@ -169,13 +168,14 @@ internal static class StatementOptimizer
                     .Select(c => new SetClause(c.ColumnName, c.Value))
                     .ToList();
 
-                // Version column goes into SetClauses with the incremented value.
-                if (versionCell is not null)
-                    setClauses.Add(new SetClause(versionCell.ColumnName, (object)newVersionValue));
+                // Version column is NOT added to SetClauses here.  When all rows in
+                // the group share the same expected version the homogeneous path emits
+                // a fixed incremented value; when versions differ the mixed path emits
+                // "ver = ver + 1" as a computed SQL expression instead.
 
                 group = (setClauses, new List<IReadOnlyList<object?>>(),
                     versionCell?.ColumnName,
-                    versionCell?.Value);
+                    new List<object?>());
                 groups[fingerprint] = group;
                 groupOrder.Add(fingerprint);
             }
@@ -186,16 +186,48 @@ internal static class StatementOptimizer
                     keyValues[idx] = cell.Value;
 
             group.KeyValues.Add(keyValues);
+
+            if (versionCell is not null)
+                group.ExpectedVersionValues.Add(versionCell.Value);
         }
 
         return groupOrder
             .Select(fp =>
             {
-                var (setClauses, keyValues, versionColumn, expectedVersion) = groups[fp];
+                var (setClauses, keyValues, versionColumn, expectedVersionValues) = groups[fp];
+
+                if (versionColumn is null)
+                    return (OptimizedOperation)new GroupedUpdate(
+                        vtable.TableName, vtable.Schema,
+                        setClauses, keyColumns, keyValues);
+
+                // Homogeneous: all rows share the same expected version.
+                // Emit a fixed incremented value in SetClauses and use the efficient
+                // Id IN (…) AND Version = @shared form.
+                var firstVersion = (long)Convert.ChangeType(expectedVersionValues[0]!, typeof(long));
+                var allSame = expectedVersionValues.All(v =>
+                    (long)Convert.ChangeType(v!, typeof(long)) == firstVersion);
+
+                if (allSame)
+                {
+                    var versionedSet = new List<SetClause>(setClauses)
+                    {
+                        new SetClause(versionColumn, (object)(firstVersion + 1))
+                    };
+                    return (OptimizedOperation)new GroupedUpdate(
+                        vtable.TableName, vtable.Schema,
+                        versionedSet, keyColumns, keyValues,
+                        versionColumn, ExpectedVersionValue: expectedVersionValues[0]);
+                }
+
+                // Mixed: rows have different expected versions.
+                // SetClauses does NOT include the version column; the SQL layer will
+                // emit "ver = ver + 1" as a computed expression and use per-row
+                // (key, version) WHERE predicates.
                 return (OptimizedOperation)new GroupedUpdate(
                     vtable.TableName, vtable.Schema,
                     setClauses, keyColumns, keyValues,
-                    versionColumn, expectedVersion);
+                    versionColumn, ExpectedVersionValues: expectedVersionValues);
             })
             .ToList();
     }

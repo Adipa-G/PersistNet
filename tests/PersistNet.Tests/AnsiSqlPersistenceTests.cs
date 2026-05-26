@@ -344,16 +344,28 @@ public class AnsiSqlPersistenceTests
 
     // ── Version column (optimistic concurrency) ──────────────────────────────
 
+    /// <summary>Homogeneous: all rows share the same expected version.</summary>
     private static GroupedUpdate MakeVersionedUpdate(string table,
         IReadOnlyList<SetClause> set,
         IReadOnlyList<string> keyCols,
         string versionColumn,
         object? expectedVersion,
         params IReadOnlyList<object?>[] keyValues) =>
-        new(table, null, set, keyCols, keyValues, versionColumn, expectedVersion);
+        new(table, null, set, keyCols, keyValues, versionColumn,
+            ExpectedVersionValue: expectedVersion);
+
+    /// <summary>Mixed: each row has its own expected version (parallel to keyValues).</summary>
+    private static GroupedUpdate MakeMixedVersionUpdate(string table,
+        IReadOnlyList<SetClause> set,
+        IReadOnlyList<string> keyCols,
+        string versionColumn,
+        IReadOnlyList<object?> expectedVersionValues,
+        params IReadOnlyList<object?>[] keyValues) =>
+        new(table, null, set, keyCols, keyValues, versionColumn,
+            ExpectedVersionValues: expectedVersionValues);
 
     [Fact]
-    public void Given_UpdateWithVersionColumn_When_BuildUpdateSql_Then_WhereIncludesVersionPredicate()
+    public void Given_HomogeneousVersionUpdate_When_BuildUpdateSql_Then_UsesInClauseWithSharedVersionGuard()
     {
         var ansi = new AnsiPersistence();
         var update = MakeVersionedUpdate(
@@ -366,13 +378,13 @@ public class AnsiSqlPersistenceTests
 
         var (sql, _) = ansi.BuildUpdateSql(update);
 
-        // WHERE must contain both the key predicate and the version guard.
+        // Homogeneous path: efficient IN clause + single shared version guard.
         Assert.Contains("\"Id\" IN", sql);
         Assert.Contains("AND \"Version\"=", sql);
     }
 
     [Fact]
-    public void Given_UpdateWithVersionColumn_When_BuildUpdateSql_Then_VersionParamOrderIsAfterKeys()
+    public void Given_HomogeneousVersionUpdate_When_BuildUpdateSql_Then_VersionParamOrderIsAfterKeys()
     {
         var ansi = new AnsiPersistence();
         var update = MakeVersionedUpdate(
@@ -388,8 +400,60 @@ public class AnsiSqlPersistenceTests
         // Parameters: @p0=Label SET, @p1=Version SET, @p2=Id key, @p3=expected version
         Assert.Equal(4, parameters.Count);
         Assert.Equal("X",  parameters[0].Value); // SET Label
-        Assert.Equal(2L,   parameters[1].Value); // SET Version (new)
+        Assert.Equal(2L,   parameters[1].Value); // SET Version (new fixed value)
         Assert.Equal(7,    parameters[2].Value); // WHERE Id
         Assert.Equal(1L,   parameters[3].Value); // WHERE Version = expected
+    }
+
+    [Fact]
+    public void Given_MixedVersionUpdate_When_AnsiSqlBuildUpdateSql_Then_UsesRowValueConstructorWithVersionColumn()
+    {
+        var ansi = new AnsiPersistence();
+        // Two rows at different version baselines, same data change.
+        // SetClauses must NOT include a Version entry — the SQL layer emits ver = ver+1.
+        var update = MakeMixedVersionUpdate(
+            "items",
+            new[] { new SetClause("Label", "X") },
+            new[] { "Id" },
+            versionColumn: "Version",
+            expectedVersionValues: new object?[] { 1L, 2L },
+            new object?[] { 7 },
+            new object?[] { 9 });
+
+        var (sql, parameters) = ansi.BuildUpdateSql(update);
+
+        // SET must include the computed increment expression, not a parameter.
+        Assert.Contains("\"Version\" = \"Version\" + 1", sql);
+        // WHERE uses row-value constructor: (Id, Version) IN (...)
+        Assert.Contains("(\"Id\", \"Version\") IN", sql);
+        // Parameters: @p0=Label, then 2×(Id, expectedVersion) = 5 total.
+        Assert.Equal(5, parameters.Count);
+        Assert.Equal("X", parameters[0].Value); // SET Label
+        Assert.Equal(7,   parameters[1].Value); // row 1 Id
+        Assert.Equal(1L,  parameters[2].Value); // row 1 expected version
+        Assert.Equal(9,   parameters[3].Value); // row 2 Id
+        Assert.Equal(2L,  parameters[4].Value); // row 2 expected version
+    }
+
+    [Fact]
+    public void Given_MixedVersionUpdate_When_SqlServerBuildUpdateSql_Then_UsesOrChainWithVersionColumn()
+    {
+        var ss = SqlServer();
+        var update = MakeMixedVersionUpdate(
+            "items",
+            new[] { new SetClause("Label", "X") },
+            new[] { "Id" },
+            versionColumn: "Version",
+            expectedVersionValues: new object?[] { 1L, 2L },
+            new object?[] { 7 },
+            new object?[] { 9 });
+
+        var (sql, parameters) = ss.BuildUpdateSql(update);
+
+        Assert.Contains("[Version] = [Version] + 1", sql);
+        Assert.Contains("[Id]=", sql);
+        Assert.Contains("[Version]=", sql);
+        Assert.Contains(" OR ", sql);
+        Assert.Equal(5, parameters.Count);
     }
 }

@@ -517,4 +517,311 @@ public sealed class SelectQueryTests : IAsyncDisposable
         Assert.Equal("Daikon", results[0].Name); // Price 10 (cheapest first)
         Assert.Equal("Apple",  results[3].Name); // Price 30 (most expensive last)
     }
+
+    // ── Phase 1: PredicateVisitor / FieldExprBuilder / LogicalExpr / NullCheckExpr ─────────
+
+    [Fact]
+    public async Task Query_Where_Lambda_Or_TwoConditions()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // p.Price > 25 OR !p.IsActive → Apple(30,active), Carrot(0,inactive), Daikon(0,inactive)
+        var results = await txn.Query<Product>()
+            .Where(p => p.Price > 25 || !p.IsActive)
+            .ToListAsync();
+
+        Assert.Equal(3, results.Count);
+        Assert.Contains(results, p => p.Name == "Apple");
+        Assert.Contains(results, p => p.Name == "Carrot");
+        Assert.Contains(results, p => p.Name == "Daikon");
+    }
+
+    [Fact]
+    public async Task Query_Where_Lambda_Not()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(p => !p.IsActive)
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count); // Carrot and Daikon
+        Assert.All(results, p => Assert.False(p.IsActive));
+    }
+
+    [Fact]
+    public async Task Query_Where_Lambda_NullColumn_Eq_Null()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(p => p.Category == null)
+            .ToListAsync();
+
+        Assert.Single(results); // only Daikon has NULL Category
+        Assert.Equal("Daikon", results[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_Where_Lambda_NullColumn_Neq_Null()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(p => p.Category != null)
+            .ToListAsync();
+
+        Assert.Equal(3, results.Count); // Apple, Banana, Carrot
+        Assert.DoesNotContain(results, p => p.Name == "Daikon");
+    }
+
+    [Fact]
+    public async Task Query_Where_Lambda_StringStartsWith()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(p => p.Name.StartsWith("B"))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Banana", results[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_Where_Lambda_StringEndsWith()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(p => p.Name.EndsWith("t"))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Carrot", results[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_IsNull()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Category).IsNull())
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Daikon", results[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_IsNotNull()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Category).IsNotNull())
+            .ToListAsync();
+
+        Assert.Equal(3, results.Count);
+        Assert.DoesNotContain(results, p => p.Name == "Daikon");
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_Neq()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Price).Neq().Value(30))
+            .ToListAsync();
+
+        Assert.Equal(3, results.Count); // Banana(20), Carrot(15), Daikon(10)
+        Assert.DoesNotContain(results, p => p.Name == "Apple");
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_Gt()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Price).Gt().Value(15))
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count); // Apple(30), Banana(20)
+        Assert.All(results, p => Assert.True(p.Price > 15));
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_Ge()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Price).Ge().Value(15))
+            .ToListAsync();
+
+        Assert.Equal(3, results.Count); // Apple(30), Banana(20), Carrot(15)
+        Assert.All(results, p => Assert.True(p.Price >= 15));
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_Lt()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Price).Lt().Value(20))
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count); // Carrot(15), Daikon(10)
+        Assert.All(results, p => Assert.True(p.Price < 20));
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_Le()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Price).Le().Value(20))
+            .ToListAsync();
+
+        Assert.Equal(3, results.Count); // Banana(20), Carrot(15), Daikon(10)
+        Assert.All(results, p => Assert.True(p.Price <= 20));
+    }
+
+    [Fact]
+    public async Task Query_Where_ExprBuilder_Like()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Field<Product>(p => p.Name).Like().Value("%an%"))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Banana", results[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_Where_EmptyContains_ReturnsNoRows()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var emptyIds = new List<int>();
+        var results = await txn.Query<Product>()
+            .Where(p => emptyIds.Contains(p.Id))
+            .ToListAsync();
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public async Task Query_Where_Expr_And_Combinator()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Price >= 20 AND Price <= 20 → exactly Banana (price=20)
+        var atLeast20 = Expr.Field<Product>(p => p.Price).Ge().Value(20);
+        var atMost20  = Expr.Field<Product>(p => p.Price).Le().Value(20);
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.And(atLeast20, atMost20))
+            .ToListAsync();
+
+        Assert.Single(results);
+        Assert.Equal("Banana", results[0].Name);
+    }
+
+    [Fact]
+    public async Task Query_Where_Expr_Or_Combinator()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var isApple  = Expr.Field<Product>(p => p.Name).Eq().Value("Apple");
+        var isDaikon = Expr.Field<Product>(p => p.Name).Eq().Value("Daikon");
+
+        var results = await txn.Query<Product>()
+            .Where(Expr.Or(isApple, isDaikon))
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, p => p.Name == "Apple");
+        Assert.Contains(results, p => p.Name == "Daikon");
+    }
+
+    // ── Phase 3: SelectProjectedQuery gaps ────────────────────────────────
+
+    [Fact]
+    public async Task Select_SkipAndTake_PaginatesProjectedRows()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        // Order by price ascending: Daikon(10), Carrot(15), Banana(20), Apple(30)
+        // Skip(1).Take(2) → Carrot(15), Banana(20)
+        var results = await txn.Query<Product>()
+            .OrderBy(p => p.Price)
+            .Select<ProductSummaryDto>()
+            .Skip(1)
+            .Take(2)
+            .ToListAsync();
+
+        Assert.Equal(2, results.Count);
+        Assert.Equal("Carrot", results[0].Name);
+        Assert.Equal("Banana", results[1].Name);
+    }
+
+    [Fact]
+    public async Task Select_OrderByDescendingAfterProjection()
+    {
+        await SeedAsync();
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Select<ProductSummaryDto>()
+            .OrderByDescending(dto => dto.Price)
+            .ToListAsync();
+
+        Assert.Equal(4, results.Count);
+        Assert.Equal("Apple",  results[0].Name); // price 30 — highest
+        Assert.Equal("Daikon", results[3].Name); // price 10 — lowest
+    }
+
+    [Fact]
+    public async Task Select_Distinct_DeduplicatesProjectedRows()
+    {
+        await SeedAsync();
+        // Add a second Apple row with identical projected columns (Name="Apple", Price=30)
+        await ExecAsync("INSERT INTO sq_products VALUES (5, 'Apple', 30, 1, 'Fruit')");
+        await using var txn = await _factory.OpenTransactionAsync();
+
+        var results = await txn.Query<Product>()
+            .Select<ProductSummaryDto>()
+            .Distinct()
+            .ToListAsync();
+
+        // 5 raw rows but 4 unique (Name, Price) pairs after deduplication
+        Assert.Equal(4, results.Count);
+        Assert.Single(results.Where(r => r.Name == "Apple"));
+    }
 }

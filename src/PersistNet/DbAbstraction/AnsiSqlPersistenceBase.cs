@@ -167,17 +167,21 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
 
     public async Task ExecuteUpdateAsync(GroupedUpdate update, CancellationToken ct = default)
     {
-        // Shared SET params + optional version param count; remainder is per-row key params.
-        var sharedParams   = update.SetClauses.Count + (update.VersionColumn is not null ? 1 : 0);
-        var paramsPerRow   = Math.Max(1, update.KeyColumns.Count);
+        // Mixed-version mode: each row carries its own expected version in the WHERE clause
+        // (key columns + 1 version param per row).  The version SET clause becomes a computed
+        // expression (ver = ver+1) so it contributes no extra shared parameter.
+        // Homogeneous-version mode: version is a single shared param appended to the WHERE.
+        var isMixedVersion = update.ExpectedVersionValues is not null;
+        var sharedParams   = update.SetClauses.Count + (update.VersionColumn is not null && !isMixedVersion ? 1 : 0);
+        var paramsPerRow   = Math.Max(1, update.KeyColumns.Count + (isMixedVersion ? 1 : 0));
         var maxRowsPerBatch = Math.Max(1, (MaxParameterBatchSize - sharedParams) / paramsPerRow);
 
         var expectedRows  = update.KeyValues.Count;
         var totalAffected = 0;
 
-        foreach (var chunk in update.KeyValues.Chunk(maxRowsPerBatch))
+        foreach (var (chunk, chunkVersions) in ChunkUpdate(update, maxRowsPerBatch))
         {
-            var chunkUpdate = update with { KeyValues = chunk };
+            var chunkUpdate = update with { KeyValues = chunk, ExpectedVersionValues = chunkVersions };
             var (sql, parameters) = BuildUpdateSql(chunkUpdate);
             totalAffected += await RunAsync(sql, parameters, ct);
         }
@@ -206,18 +210,93 @@ internal abstract class AnsiSqlPersistenceBase : IDbPersistence
             setParts.Add($"{QuoteIdentifier(sc.ColumnName)}={pName}");
         }
 
-        var wherePart = BuildKeyWhereClause(update.KeyColumns, update.KeyValues, parameters, ref idx);
+        string wherePart;
 
-        if (update.VersionColumn is not null)
+        if (update.ExpectedVersionValues is not null)
         {
-            var pName = $"@p{idx++}";
-            parameters.Add((pName, update.ExpectedVersionValue));
-            wherePart += $" AND {QuoteIdentifier(update.VersionColumn)}={pName}";
+            // Mixed-version mode: version is not a fixed SET value — emit as a computed
+            // expression so each row's version increments from whatever it currently is.
+            // The WHERE clause uses per-row (key, version) predicates via a virtual method
+            // so SQL Server can substitute its OR-chain form.
+            setParts.Add($"{QuoteIdentifier(update.VersionColumn!)} = {QuoteIdentifier(update.VersionColumn!)} + 1");
+            wherePart = BuildVersionedKeyWhereClause(
+                update.KeyColumns, update.KeyValues,
+                update.VersionColumn!, update.ExpectedVersionValues,
+                parameters, ref idx);
+        }
+        else
+        {
+            // Homogeneous-version (or unversioned) mode: standard IN-clause key lookup,
+            // optionally with a shared version guard appended to the WHERE.
+            wherePart = BuildKeyWhereClause(update.KeyColumns, update.KeyValues, parameters, ref idx);
+
+            if (update.VersionColumn is not null)
+            {
+                var pName = $"@p{idx++}";
+                parameters.Add((pName, update.ExpectedVersionValue));
+                wherePart += $" AND {QuoteIdentifier(update.VersionColumn)}={pName}";
+            }
         }
 
         var sql = $"UPDATE {QualifiedTable(update.TableName, update.Schema)} "
                 + $"SET {string.Join(", ", setParts)} WHERE {wherePart}";
         return (sql, parameters);
+    }
+
+    /// <summary>
+    /// Generates the WHERE clause for a mixed-version UPDATE: each row has its own
+    /// expected version so the key and version must be paired per-row.
+    /// ANSI/SQLite: <c>("key","ver") IN ((@p0,@p1), (@p2,@p3), …)</c>
+    /// SQL Server overrides to use OR-predicate chains.
+    /// </summary>
+    protected virtual string BuildVersionedKeyWhereClause(
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<IReadOnlyList<object?>> keyValues,
+        string versionColumn,
+        IReadOnlyList<object?> expectedVersionValues,
+        List<(string Name, object? Value)> parameters,
+        ref int idx)
+    {
+        // Treat (key columns + version column) as a composite lookup using the
+        // ANSI row-value constructor — the same approach used for composite PKs.
+        var allCols = keyColumns.Append(versionColumn);
+        var colList = $"({string.Join(", ", allCols.Select(QuoteIdentifier))})";
+        var rowTuples = new List<string>();
+        for (var i = 0; i < keyValues.Count; i++)
+        {
+            var pNames = new List<string>();
+            foreach (var value in keyValues[i])
+            {
+                var pName = $"@p{idx++}";
+                parameters.Add((pName, value));
+                pNames.Add(pName);
+            }
+            var vPName = $"@p{idx++}";
+            parameters.Add((vPName, expectedVersionValues[i]));
+            pNames.Add(vPName);
+            rowTuples.Add($"({string.Join(", ", pNames)})");
+        }
+        return $"{colList} IN ({string.Join(", ", rowTuples)})";
+    }
+
+    /// <summary>
+    /// Splits a <see cref="GroupedUpdate"/> into batches no larger than
+    /// <paramref name="maxRows"/>, keeping <c>KeyValues</c> and
+    /// <c>ExpectedVersionValues</c> in sync.
+    /// </summary>
+    private static IEnumerable<(IReadOnlyList<IReadOnlyList<object?>> Keys, IReadOnlyList<object?>? Versions)>
+        ChunkUpdate(GroupedUpdate update, int maxRows)
+    {
+        var keys     = update.KeyValues;
+        var versions = update.ExpectedVersionValues;
+        for (var start = 0; start < keys.Count; start += maxRows)
+        {
+            var keyChunk = (IReadOnlyList<IReadOnlyList<object?>>)keys.Skip(start).Take(maxRows).ToList();
+            var verChunk = versions is not null
+                ? (IReadOnlyList<object?>)versions.Skip(start).Take(maxRows).ToList()
+                : null;
+            yield return (keyChunk, verChunk);
+        }
     }
 
     // ── DELETE ──────────────────────────────────────────────────────────────

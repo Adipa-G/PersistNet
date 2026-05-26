@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
+using PersistNet;
 using PersistNet.DbAbstraction;
 using PersistNet.Schema;
 using Xunit;
@@ -251,5 +252,107 @@ public class SqliteSchemaTests : IAsyncDisposable
 
         var col = result!.Columns.Single(c => c.Name == "Name");
         Assert.Equal(200, col.Size);
+    }
+
+    // ── Phase 4a: BuildAddForeignKeySql referential rules + GenerateDiffSql ──────────
+
+    [Fact]
+    public void Given_ForeignKey_CascadeRule_When_BuildAddForeignKey_Then_OnDeleteCascade()
+    {
+        var fk = new SchemaForeignKey("fk_test", ["OrderId"], "Orders", null, ["Id"],
+            ReferentialRuleType.Cascade, null);
+        var sql = _schema.BuildAddForeignKeySql("OrderLines", null, fk);
+        Assert.Contains("ON DELETE CASCADE", sql);
+        Assert.Contains("FOREIGN KEY", sql);
+    }
+
+    [Fact]
+    public void Given_ForeignKey_SetNullRule_When_BuildAddForeignKey_Then_OnDeleteSetNull()
+    {
+        var fk = new SchemaForeignKey("fk_test", ["OrderId"], "Orders", null, ["Id"],
+            ReferentialRuleType.SetNull, null);
+        var sql = _schema.BuildAddForeignKeySql("OrderLines", null, fk);
+        Assert.Contains("ON DELETE SET NULL", sql);
+    }
+
+    [Fact]
+    public void Given_ForeignKey_RestrictRule_When_BuildAddForeignKey_Then_OnDeleteRestrict()
+    {
+        var fk = new SchemaForeignKey("fk_test", ["OrderId"], "Orders", null, ["Id"],
+            ReferentialRuleType.Restrict, null);
+        var sql = _schema.BuildAddForeignKeySql("OrderLines", null, fk);
+        Assert.Contains("ON DELETE RESTRICT", sql);
+    }
+
+    [Fact]
+    public void Given_ForeignKey_NoActionRule_When_BuildAddForeignKey_Then_OnDeleteNoAction()
+    {
+        var fk = new SchemaForeignKey("fk_test", ["OrderId"], "Orders", null, ["Id"],
+            ReferentialRuleType.DoNothing, null);
+        var sql = _schema.BuildAddForeignKeySql("OrderLines", null, fk);
+        Assert.Contains("ON DELETE NO ACTION", sql);
+    }
+
+    [Fact]
+    public void Given_ForeignKey_WithOnUpdateCascade_When_BuildAddForeignKey_Then_OnUpdateClausePresent()
+    {
+        var fk = new SchemaForeignKey("fk_test", ["OrderId"], "Orders", null, ["Id"],
+            null, ReferentialRuleType.Cascade);
+        var sql = _schema.BuildAddForeignKeySql("OrderLines", null, fk);
+        Assert.Contains("ON UPDATE CASCADE", sql);
+        Assert.DoesNotContain("ON DELETE", sql);
+    }
+
+    [Fact]
+    public void Given_MultiColumnIndex_When_BuildCreateIndex_Then_AllColumnsPresent()
+    {
+        var idx = new SchemaIndex("idx_composite", ["LastName", "FirstName"], false);
+        var sql = _schema.BuildCreateIndexSql("Persons", null, idx);
+        Assert.Contains("\"LastName\"", sql);
+        Assert.Contains("\"FirstName\"", sql);
+        Assert.Contains("idx_composite", sql);
+        Assert.DoesNotContain("UNIQUE", sql);
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_TablesToCreate_When_SqliteGenerateDiffSql_Then_CreateTableStatement()
+    {
+        var table = SimpleTable("NewTable", [Col("Id", "INTEGER", nullable: false)],
+            pk: new SchemaPrimaryKey(null, ["Id"]));
+        var diff = new SchemaDiff([table], [], [], [], [], [], [], [], []);
+        var snap = new SchemaSnapshot([]);
+
+        var sql = _schema.GenerateDiffSql(diff, snap, snap);
+
+        Assert.Single(sql);
+        Assert.Contains("CREATE TABLE", sql[0]);
+        Assert.Contains("\"NewTable\"", sql[0]);
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_ColumnsToAdd_When_SqliteGenerateDiffSql_Then_AddColumnStatement()
+    {
+        var diff = new SchemaDiff([], [], [("Items", null, Col("Rating", "INTEGER"))], [], [], [], [], [], []);
+        var snap = new SchemaSnapshot([]);
+
+        var sql = _schema.GenerateDiffSql(diff, snap, snap);
+
+        Assert.Single(sql);
+        Assert.Contains("ADD COLUMN", sql[0]);
+        Assert.Contains("\"Rating\"", sql[0]);
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_IndexesToDrop_When_SqliteGenerateDiffSql_Then_DropIndexStatement()
+    {
+        var diff = new SchemaDiff([], [], [], [], [], [], [("Items", null, "idx_items_name")], [], []);
+        var snap = new SchemaSnapshot([]);
+
+        var sql = _schema.GenerateDiffSql(diff, snap, snap);
+
+        Assert.Single(sql);
+        Assert.Contains("DROP INDEX", sql[0]);
+        Assert.Contains("\"idx_items_name\"", sql[0]);
+        Assert.DoesNotContain(" ON ", sql[0]); // SQLite drops index without table reference
     }
 }

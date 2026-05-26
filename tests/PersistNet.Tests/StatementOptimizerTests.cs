@@ -356,10 +356,13 @@ public class StatementOptimizerTests
 
         var result = StatementOptimizer.Optimize(vtable);
 
+        // Homogeneous path: single row → version is placed in SetClauses as a fixed
+        // incremented value so the SQL layer can emit it as a parameter.
         var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
         var versionSet = Assert.Single(gu.SetClauses, sc =>
             string.Equals(sc.ColumnName, "Version", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(4L, versionSet.Value); // 3 + 1
+        Assert.Null(gu.ExpectedVersionValues); // homogeneous path, not mixed
     }
 
     [Fact]
@@ -375,7 +378,9 @@ public class StatementOptimizerTests
 
         var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
         Assert.Equal("Version", gu.VersionColumn, StringComparer.OrdinalIgnoreCase);
+        // Single-row group → homogeneous path: ExpectedVersionValue holds the original.
         Assert.Equal(5L, gu.ExpectedVersionValue);
+        Assert.Null(gu.ExpectedVersionValues);
     }
 
     [Fact]
@@ -390,30 +395,42 @@ public class StatementOptimizerTests
 
         var result = StatementOptimizer.Optimize(vtable);
 
+        // All rows share the same version baseline → homogeneous path.
         var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
         Assert.Equal(2, gu.KeyValues.Count);
         Assert.Equal(3L, gu.SetClauses.Single(sc =>
             string.Equals(sc.ColumnName, "Version", StringComparison.OrdinalIgnoreCase)).Value);
+        Assert.Equal(2L, gu.ExpectedVersionValue); // shared expected version
+        Assert.Null(gu.ExpectedVersionValues);     // not the mixed-version path
     }
 
     [Fact]
-    public void Given_RowsWithDifferentVersions_When_Optimize_Then_SeparateGroupsPerVersion()
+    public void Given_RowsWithDifferentVersions_When_Optimize_Then_MergedIntoOneUpdateWithPerRowVersions()
     {
         WarmCache();
         var vtable = new VTable("ver_products", null, OperationType.Update, new List<VRow>
         {
             VersionedUpdateRow(id: 1, name: "X", version: 1L),
-            VersionedUpdateRow(id: 2, name: "X", version: 2L) // same name, different version → different group
+            VersionedUpdateRow(id: 2, name: "X", version: 2L) // same name, different version → same group
         });
 
         var result = StatementOptimizer.Optimize(vtable);
 
-        // Different expected-version values force separate SQL statements.
-        Assert.Equal(2, result.Count);
-        Assert.All(result, op => Assert.IsType<GroupedUpdate>(op));
+        // Same data value regardless of version baseline → one GroupedUpdate (mixed-version path).
+        var gu = Assert.IsType<GroupedUpdate>(Assert.Single(result));
+        Assert.Equal(2, gu.KeyValues.Count);
 
-        var groups = result.Cast<GroupedUpdate>().ToList();
-        Assert.Equal(1L, groups[0].ExpectedVersionValue);
-        Assert.Equal(2L, groups[1].ExpectedVersionValue);
+        // Mixed path: SetClauses has no version entry (SQL layer emits ver = ver+1).
+        Assert.DoesNotContain(gu.SetClauses, sc =>
+            string.Equals(sc.ColumnName, "Version", StringComparison.OrdinalIgnoreCase));
+
+        // Per-row expected versions are stored parallel to KeyValues.
+        Assert.NotNull(gu.ExpectedVersionValues);
+        Assert.Equal(2, gu.ExpectedVersionValues!.Count);
+        Assert.Equal(1L, gu.ExpectedVersionValues[0]);
+        Assert.Equal(2L, gu.ExpectedVersionValues[1]);
+
+        // Homogeneous field must be null.
+        Assert.Null(gu.ExpectedVersionValue);
     }
 }

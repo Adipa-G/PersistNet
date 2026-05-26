@@ -206,4 +206,88 @@ public class SqlServerSchemaTests
         var sql = Schema().BuildCreateTableSql(table);
         Assert.Contains("NOT NULL", sql);
     }
+
+    // ── GenerateDiffSql ────────────────────────────────────────────────────────────
+
+    // Schema()+null! is safe: GenerateDiffSql never touches the connection.
+    // desired/actual are only used by SqliteSchema's ColumnsToAlter path; pass empty here.
+    private static SchemaSnapshot EmptySnap() => new([]);
+
+    [Fact]
+    public void Given_SchemaDiff_ColumnsToAdd_When_GenerateDiffSql_Then_SqlServerAddSyntax()
+    {
+        var diff = new SchemaDiff([], [], [("Orders", null, Col("Notes", "VARCHAR"))], [], [], [], [], [], []);
+
+        var sql = Schema().GenerateDiffSql(diff, EmptySnap(), EmptySnap());
+
+        Assert.Single(sql);
+        Assert.Contains("[Notes]", sql[0]);
+        Assert.Contains("ADD ", sql[0]);
+        Assert.DoesNotContain("ADD COLUMN", sql[0]); // SQL Server omits COLUMN keyword
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_TablesToCreate_When_GenerateDiffSql_Then_CreateTablePresent()
+    {
+        var table = TableWith("Reports", [Col("Id", "INTEGER", nullable: false)],
+            pk: new SchemaPrimaryKey(null, ["Id"]));
+        var diff = new SchemaDiff([table], [], [], [], [], [], [], [], []);
+
+        var sql = Schema().GenerateDiffSql(diff, EmptySnap(), EmptySnap());
+
+        Assert.NotEmpty(sql);
+        Assert.Contains(sql, s => s.Contains("CREATE TABLE") && s.Contains("[Reports]"));
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_TablesToDrop_When_GenerateDiffSql_Then_DropTablePresent()
+    {
+        var diff = new SchemaDiff([], [("Legacy", "dbo")], [], [], [], [], [], [], []);
+
+        var sql = Schema().GenerateDiffSql(diff, EmptySnap(), EmptySnap());
+
+        Assert.Single(sql);
+        Assert.Contains("DROP TABLE", sql[0]);
+        Assert.Contains("[dbo].[Legacy]", sql[0]);
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_ColumnsToAlter_When_GenerateDiffSql_Then_AlterColumnStatement()
+    {
+        var col  = Col("Status", "VARCHAR", nullable: false, size: 50);
+        var diff = new SchemaDiff([], [], [], [("Orders", null, col)], [], [], [], [], []);
+
+        var sql = Schema().GenerateDiffSql(diff, EmptySnap(), EmptySnap());
+
+        Assert.Single(sql);
+        Assert.Contains("ALTER COLUMN", sql[0]);
+        Assert.Contains("[Status]", sql[0]);
+        Assert.Contains("NVARCHAR(50)", sql[0]);
+        Assert.Contains("NOT NULL", sql[0]);
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_IndexesToDrop_When_GenerateDiffSql_Then_DropIndexOnTableSyntax()
+    {
+        var diff = new SchemaDiff([], [], [], [], [], [], [("Orders", null, "idx_orders_status")], [], []);
+
+        var sql = Schema().GenerateDiffSql(diff, EmptySnap(), EmptySnap());
+
+        Assert.Single(sql);
+        Assert.Contains("DROP INDEX", sql[0]);
+        Assert.Contains("[idx_orders_status]", sql[0]);
+        Assert.Contains("ON [Orders]", sql[0]); // SQL Server requires ON <table>
+    }
+
+    [Fact]
+    public void Given_SchemaDiff_ForeignKeysToDrop_When_GenerateDiffSql_Then_DropConstraintStatement()
+    {
+        var diff = new SchemaDiff([], [], [], [], [], [], [], [], [("Orders", null, "fk_orders_customer")]);
+
+        var sql = Schema().GenerateDiffSql(diff, EmptySnap(), EmptySnap());
+
+        Assert.Single(sql);
+        Assert.Contains("DROP CONSTRAINT", sql[0]);
+        Assert.Contains("[fk_orders_customer]", sql[0]);
+    }
 }

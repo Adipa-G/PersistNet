@@ -60,6 +60,38 @@ internal sealed class SqlServerPersistence : AnsiSqlPersistenceBase
         return string.Join(" OR ", predicates);
     }
 
+    /// <summary>
+    /// Mixed-version UPDATE WHERE clause for SQL Server.
+    /// SQL Server does not support row-value constructors in IN clauses, so we use an
+    /// OR-predicate chain: <c>([key]=@p AND [ver]=@p) OR ([key]=@p AND [ver]=@p) …</c>
+    /// Batching in <c>ExecuteUpdateAsync</c> keeps chunk sizes within the 2100-param limit.
+    /// </summary>
+    protected override string BuildVersionedKeyWhereClause(
+        IReadOnlyList<string> keyColumns,
+        IReadOnlyList<IReadOnlyList<object?>> keyValues,
+        string versionColumn,
+        IReadOnlyList<object?> expectedVersionValues,
+        List<(string Name, object? Value)> parameters,
+        ref int idx)
+    {
+        var predicates = new List<string>();
+        for (var i = 0; i < keyValues.Count; i++)
+        {
+            var andParts = new List<string>();
+            for (var k = 0; k < keyColumns.Count; k++)
+            {
+                var pName = $"@p{idx++}";
+                parameters.Add((pName, keyValues[i][k]));
+                andParts.Add($"{QuoteIdentifier(keyColumns[k])}={pName}");
+            }
+            var vPName = $"@p{idx++}";
+            parameters.Add((vPName, expectedVersionValues[i]));
+            andParts.Add($"{QuoteIdentifier(versionColumn)}={vPName}");
+            predicates.Add($"({string.Join(" AND ", andParts)})");
+        }
+        return string.Join(" OR ", predicates);
+    }
+
     protected override async Task<object?> GetLastInsertedKeyAsync(CancellationToken ct)
     {
         using var cmd = CreateCommand();

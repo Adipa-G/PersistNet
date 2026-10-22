@@ -53,6 +53,9 @@ jobs:
 
   publish-to-nuget:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     needs: build-and-test
     if: github.ref == 'refs/heads/master'
     steps:

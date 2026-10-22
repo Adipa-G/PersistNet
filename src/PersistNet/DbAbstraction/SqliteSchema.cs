@@ -365,8 +365,8 @@ internal sealed class SqliteSchema : AnsiSqlSchemaBase
 
             // Detect AUTOINCREMENT by inspecting the stored CREATE TABLE SQL
             var createSql = await QueryAsync(
-                $"SELECT sql FROM sqlite_master WHERE type='table' AND name={QuoteIdentifier(tableName)}",
-                r => (string)r[0], ct);
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=@name",
+                r => (string)r[0], ct, ("@name", tableName));
 
             bool hasAutoIncrement = createSql.Count > 0 &&
                 createSql[0].Contains("AUTOINCREMENT", StringComparison.OrdinalIgnoreCase);

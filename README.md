@@ -1,6 +1,6 @@
 # PersistNet
 
-PersistNet is a high-performance, attribute-driven ORM for .NET 8. It targets SQL Server and SQLite, uses a transaction-first API, and ships a built-in schema-migration engine that compares your entity model against the live database and applies the necessary DDL.
+PersistNet is a high-performance, attribute-driven ORM for .NET 10. It targets SQL Server and SQLite, uses a transaction-first API, and ships a built-in schema-migration engine that compares your entity model against the live database and applies the necessary DDL.
 
 ---
 
@@ -1045,40 +1045,40 @@ Set the minimum log level to `Debug` for `PersistNet` in `appsettings.json` to s
 
 ## Benchmarks
 
-The numbers below were collected with BenchmarkDotNet 0.14.0 against a local SQL Server (MSSQLLocalDB), 1 000 orders with 5 line-items and 3 charges each (18 000 rows total), on .NET 8.
+The numbers below were collected with BenchmarkDotNet 0.14.0 against a local SQL Server 2025 LocalDB (MSSQLLocalDB), 1 000 orders with 2 line-items and 2 charges each (7 000 rows total), on .NET 10.0.13 (x64, Windows 11).
 
 ### Read operations
 
 | Method | Framework | Mean | Allocated |
 |---|---|---|---|
-| QueryAll | PersistNet | 743 µs | 313 KB |
-| QueryAll | EF Core | 1,074 µs | 461 KB |
-| QueryById | PersistNet | 42 µs | 18 KB |
-| QueryById | EF Core | 61 µs | 27 KB |
-| QueryByCond | PersistNet | 118 µs | 51 KB |
-| QueryByCond | EF Core | 97 µs | 44 KB |
-| QueryGraph | PersistNet | 3,290 µs | 1,240 KB |
-| QueryGraph | EF Core | 16,380 µs | 4,820 KB |
+| QueryAll | PersistNet | 685 µs | 312 KB |
+| QueryAll | EF Core | 700 µs | 462 KB |
+| QueryById (50 lookups) | PersistNet | 4,038 µs | 350 KB |
+| QueryById (50 lookups) | EF Core | 11,234 µs | 811 KB |
+| QueryCond | PersistNet | 721 µs | 163 KB |
+| QueryCond | EF Core | 881 µs | 288 KB |
+| QueryGraph | PersistNet | 4,107 µs | 2,461 KB |
+| QueryGraph | EF Core | 17,382 µs | 5,778 KB |
 
 ### Write operations
 
 | Method | Framework | Mean | Allocated |
 |---|---|---|---|
-| Insert (1 000 orders) | PersistNet | 1,420 ms | 98 MB |
-| Insert (1 000 orders) | EF Core | 2,150 ms | 142 MB |
-| Update (50 rows) | PersistNet | 310 µs | 104 KB |
-| Update (50 rows) | EF Core | 480 µs | 178 KB |
-| Delete (1 000 orders) | PersistNet | 890 ms | 61 MB |
-| Delete (1 000 orders) | EF Core | 1,340 ms | 89 MB |
+| Insert (1 000 orders) | PersistNet | 674 ms | 19.7 MB |
+| Insert (1 000 orders) | EF Core | 325 ms | 59.3 MB |
+| Update (50 orders) | PersistNet | 19.3 ms | 1.72 MB |
+| Update (50 orders) | EF Core | 21.1 ms | 2.34 MB |
+| Delete (1 000 orders) | PersistNet | 1,297 ms | 11.0 MB |
+| Delete (1 000 orders) | EF Core | 1,053 ms | 42.5 MB |
 
-> Results represent medians from 5 iterations after 2 warm-up iterations. Your hardware and workload will produce different absolute numbers; the relative ordering should remain consistent.
+> Read results are means of 5 iterations after 2 warm-up iterations; write results are means of 3 iterations after 1 warm-up iteration. Some EF Core results (QueryById, Update, Delete) showed high run-to-run variance. Your hardware and workload will produce different absolute numbers.
 
 **Key observations:**
 
-- PersistNet is **~30 % faster and ~32 % lighter on memory** for full-table reads.
-- EF Core edges ahead on small **filtered queries** thanks to query-plan caching in its compiled query layer.
-- PersistNet is **~5× faster** when loading deep graphs (`QueryGraph`), because it issues a single multi-join SQL query rather than N+1 round trips.
-- Write throughput (insert, update, delete) is consistently **35–40 % better** in PersistNet due to lighter change-tracking overhead.
+- PersistNet allocates **less memory in every scenario**, roughly 25–75 % less than EF Core.
+- Reads are faster across the board: about the same for full-table reads (`QueryAll`), **~18 % faster** for filtered queries, **~2.8× faster** for repeated lookups by primary key, and **~4.2× faster** for loading deep graphs (`QueryGraph`).
+- Updates are roughly on par (~9 % faster).
+- EF Core is faster for bulk writes: **~2× faster for inserts** and **~19 % faster for deletes**.
 
 ### Running the benchmarks yourself
 

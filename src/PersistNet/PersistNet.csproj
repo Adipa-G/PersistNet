@@ -1,19 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
 
     <!-- NuGet package metadata -->
     <PackageId>PersistNet</PackageId>
-    <Version>1.0.1</Version>
-    <FileVersion>1.0.1.0</FileVersion>
+    <Version>1.0.2</Version>
+    <FileVersion>1.0.2.0</FileVersion>
     <Authors>Adipa Gunasekara</Authors>
     <Company>Adipa Gunasekara</Company>
     <Copyright>Adipa Gunasekara 2025</Copyright>
     <Product>PersistNet</Product>
-    <Description>PersistNet is a high-performance, attribute-driven ORM for .NET 8, supporting SQL Server and SQLite with a built-in schema migration engine.</Description>
+    <Description>PersistNet is a high-performance, attribute-driven ORM for .NET 10, supporting SQL Server and SQLite with a built-in schema migration engine.</Description>
     <PackageProjectUrl>https://github.com/Adipa-G/ndbgatev2/</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Adipa-G/ndbgatev2/</RepositoryUrl>
     <PackageTags>orm;dotnet;sqlserver;sqlite;persistence</PackageTags>
@@ -36,6 +36,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging" />
     <PackageReference Include="Microsoft.Data.SqlClient" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
 
 </Project>

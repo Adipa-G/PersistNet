@@ -67,7 +67,7 @@ jobs:
         with:
           dotnet-version: '10.0.x'
         env:
-          NUGET_AUTH_TOKEN: ${{ secrets.NUGET_TOKEN }}
+          NUGET_AUTH_USER: ${{ secrets.NUGET_USER }}
 
       - name: Restore dependencies
         run: dotnet restore PersistNet.sln
